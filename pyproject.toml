@@ -1,0 +1,11 @@
+[project]
+name = "fplaycity"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp-server>=0.1.4",
+    "mcp[cli,server]>=1.8.0",
+]
