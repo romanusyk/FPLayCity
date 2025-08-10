@@ -37,6 +37,7 @@ def ensure_dir_exists(filepath: str) -> None:
 class Season:
 
     s2425 = '2024-2025'
+    s2526 = '2025-2026'
 
 
 class BaseResource:
@@ -154,7 +155,7 @@ class CompoundResource(BaseResource):
 
 
 async def load(client: AsyncClient, freshness: int = 1):
-    season = Season.s2425
+    season = Season.s2526
 
     main_resource = SimpleResource('bootstrap-static/', f'data/{season}/bootstrap')
     fixtures_resource = SimpleResource('fixtures/', f'data/{season}/fixtures')
@@ -171,7 +172,7 @@ async def load(client: AsyncClient, freshness: int = 1):
 
 
 async def bootstrap(client: AsyncClient):
-    season = Season.s2425
+    season = Season.s2526
     freshness = 1000
 
     main_resource = SimpleResource('bootstrap-static/', f'data/{season}/bootstrap')

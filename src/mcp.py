@@ -10,7 +10,11 @@ from src.fpl.forecast.models import (
     UltimateCleanSheetModel, SimpleXGModel, SimpleXAModel,
     PlayerXGUltimateModel, PlayerXAUltimateModel,
 )
-from src.fpl.models.prediction import GameweekPredictions
+from src.fpl.models.prediction import (
+    PlayerFixtureXgPrediction,
+    PlayerFixtureXaPrediction,
+    GameweekPredictions,
+)
 from src.fpl.models.season import Season
 
 logging.basicConfig(level=logging.INFO)
@@ -154,20 +158,24 @@ if __name__ == "__main__":
     asyncio.run(bootstrap(client))
     season = Season()
     for game_week in range(1, 36):
-        season.play(Fixtures.by_gw(game_week))
+        season.play(Fixtures.get_list(gameweek=game_week))
     cs_model = UltimateCleanSheetModel(season)
     xg_model = SimpleXGModel(season)
     xa_model = SimpleXAModel(season)
     player_xg_model = PlayerXGUltimateModel(season, xg_model)
     player_xa_model = PlayerXAUltimateModel(season, xa_model)
 
-    gw_predictions = GameweekPredictions()
+    gw_predictions = GameweekPredictions(season)
     for gw in range(36, 39):
-        for fixture in Fixtures.by_gw(gw):
+        for fixture in Fixtures.get_list(gameweek=gw):
             gw_predictions.add_team_prediction(cs_model.predict(fixture))
             for pf in PlayerFixtures.by_fixture(fixture.fixture_id):
-                gw_predictions.add_player_xg_prediction(player_xg_model.predict(pf))
-                gw_predictions.add_player_xa_prediction(player_xa_model.predict(pf))
+                gw_predictions.add_player_xg_prediction(
+                    PlayerFixtureXgPrediction(player_xg_model.predict(pf))
+                    )
+                gw_predictions.add_player_xa_prediction(
+                    PlayerFixtureXaPrediction(player_xa_model.predict(pf))
+                    )
     logging.info('Bootstrap complete.')
     Server.season = season
     Server.predictions = gw_predictions
