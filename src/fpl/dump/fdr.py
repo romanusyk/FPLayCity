@@ -3,6 +3,7 @@ import csv
 import os
 import argparse
 import glob
+import shutil
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -120,6 +121,53 @@ def dump_fdr(fixtures_path: str, bootstrap_path: str, first_gw: Optional[int] = 
     return fdr_data
 
 
+def generate_json_format(fdr_data: List[Dict]) -> List[Dict]:
+    """
+    Generate JSON format with one item per team.
+    
+    Args:
+        fdr_data: List of fixture records from dump_fdr()
+        
+    Returns:
+        List of team dictionaries with average FDR and fixture list
+    """
+    # Group data by team
+    teams_data = {}
+    
+    for record in fdr_data:
+        team = record['team']
+        if team not in teams_data:
+            teams_data[team] = {
+                'team': team,
+                'difficulties': [],
+                'fixtures': []
+            }
+        
+        # Add difficulty for average calculation
+        teams_data[team]['difficulties'].append(record['difficulty'])
+        
+        # Create simplified fixture string: "MUN (A) 3"
+        home_away_indicator = f"({record['home_away']})"
+        fixture_string = f"{record['opponent']} {home_away_indicator} {record['difficulty']}"
+        teams_data[team]['fixtures'].append(fixture_string)
+    
+    # Convert to final format with average FDR
+    result = []
+    for team_data in teams_data.values():
+        difficulties = team_data['difficulties']
+        average_fdr = round(sum(difficulties) / len(difficulties), 2) if difficulties else 0
+        
+        result.append({
+            'team': team_data['team'],
+            'average_fdr': average_fdr,
+            'fixtures': team_data['fixtures']
+        })
+    
+    # Sort by team name for consistent output
+    result.sort(key=lambda x: x['team'])
+    return result
+
+
 def dump_fdr_csv(fixtures_path: str, bootstrap_path: str, first_gw: Optional[int] = None, last_gw: Optional[int] = None) -> None:
     """
     Wrapper to call dump_fdr() and save output as CSV.
@@ -149,8 +197,22 @@ def dump_fdr_csv(fixtures_path: str, bootstrap_path: str, first_gw: Optional[int
             writer.writeheader()
             writer.writerows(fdr_data)
         
+        # Also save as TXT format
+        txt_path = dumps_dir / 'fdr.txt'
+        shutil.copy2(csv_path, txt_path)
+        
+        # Generate JSON format with different structure
+        json_data = generate_json_format(fdr_data)
+        json_path = dumps_dir / 'fdr.json'
+        
+        with open(json_path, 'w') as jsonfile:
+            json.dump(json_data, jsonfile, indent=2)
+        
         print(f"FDR data written to {csv_path}")
+        print(f"FDR data also saved as {txt_path}")
+        print(f"FDR data also saved as {json_path}")
         print(f"Total records: {len(fdr_data)}")
+        print(f"Total teams in JSON: {len(json_data)}")
     else:
         print("No FDR data found for the specified criteria")
 

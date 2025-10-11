@@ -3,6 +3,7 @@ import csv
 import os
 import argparse
 import glob
+import shutil
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -58,8 +59,8 @@ def get_numeric_fields(player: dict) -> Dict[str, any]:
     for key, value in player.items():
         # Skip non-numeric fields, IDs/codes, and unwanted fields
         if key in ['id', 'code', 'team_code', 'element_type', 'team', 'squad_number', 
-                   'photo', 'first_name', 'second_name', 'web_name', 'news', 'news_added',
-                   'status', 'region', 'team_join_date', 'birth_date', 'opta_code',
+                   'photo', 'first_name', 'second_name', 'web_name', 'region', 
+                   'team_join_date', 'birth_date', 'opta_code',
                    'corners_and_indirect_freekicks_text', 'direct_freekicks_text', 
                    'penalties_text', 'corners_and_indirect_freekicks_order',
                    'direct_freekicks_order', 'penalties_order', 'can_select', 
@@ -100,6 +101,11 @@ def dump_players(bootstrap_path: str) -> List[Dict]:
             'position': position_mapping.get(player['element_type'], 'UNK'),
             'team': team_mapping.get(player['team'], f"Team{player['team']}"),
             'price': player['now_cost'] / 10.0,  # Convert from tenths to actual price
+            # Injury/availability information
+            'chance_of_playing_next_round': player.get('chance_of_playing_next_round'),
+            'news': player.get('news', ''),
+            'news_added': player.get('news_added'),
+            'status': player.get('status', ''),
         }
         
         # Add all numeric metrics
@@ -136,7 +142,7 @@ def dump_players_csv(bootstrap_path: str) -> None:
             all_fieldnames.update(player.keys())
         
         # Order fieldnames with key fields first
-        key_fields = ['name', 'position', 'team', 'price']
+        key_fields = ['name', 'position', 'team', 'price', 'chance_of_playing_next_round', 'news', 'news_added', 'status']
         other_fields = sorted([f for f in all_fieldnames if f not in key_fields])
         fieldnames = key_fields + other_fields
         
@@ -145,7 +151,12 @@ def dump_players_csv(bootstrap_path: str) -> None:
             writer.writeheader()
             writer.writerows(players_data)
         
+        # Also save as TXT format
+        txt_path = dumps_dir / 'players.txt'
+        shutil.copy2(csv_path, txt_path)
+        
         print(f"Players data written to {csv_path}")
+        print(f"Players data also saved as {txt_path}")
         print(f"Total players: {len(players_data)}")
         print(f"Total columns: {len(fieldnames)}")
     else:
