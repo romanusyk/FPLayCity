@@ -5,8 +5,9 @@ from httpx import AsyncClient
 
 from src.fpl.forecast.loss import AvgDiffLoss
 from src.fpl.forecast.models import (
-    UltimateCleanSheetModel, SimpleXGModel, SimpleXAModel,
+    UltimateCleanSheetModel, SimpleXGModel, SimpleXAModel, SimpleDCModel,
     PlayerXGUltimateModel, PlayerXAUltimateModel,
+    PlayerCSSimpleModel, PlayerXGSimpleModel, PlayerXASimpleModel, PlayerDCSimpleModel,
 )
 from src.fpl.loader.load import bootstrap
 from src.fpl.models.immutable import (
@@ -15,8 +16,10 @@ from src.fpl.models.immutable import (
     PlayerType,
 )
 from src.fpl.models.prediction import (
+    PlayerFixtureCsPrediction,
     PlayerFixtureXgPrediction,
     PlayerFixtureXaPrediction,
+    PlayerFixtureDcPrediction,
     GameweekPredictions,
 )
 from src.fpl.models.season import Season
@@ -40,28 +43,35 @@ class XG_BY_FDR:
 async def main(client: AsyncClient):
     await bootstrap(client)
 
-    horizon = 1
+    horizon = 3
     season = Season()
     total_loss = 0.
 
-    for target_gameweek in range(2, 39):
+    for target_gameweek in range(2, 9):
         season.play(Fixtures.get_list(gameweek=target_gameweek - 1))
-        if target_gameweek < 38:
+        if target_gameweek < 8:
             continue
 
         cs_model = UltimateCleanSheetModel(season)
         xg_model = SimpleXGModel(season)
         xa_model = SimpleXAModel(season)
-        player_xg_model = PlayerXGUltimateModel(season, xg_model)
-        player_xa_model = PlayerXAUltimateModel(season, xa_model)
+        dc_model = SimpleDCModel(season)
+        player_cs_model = PlayerCSSimpleModel(season, cs_model)
+        player_xg_model = PlayerXGSimpleModel(season, xg_model)
+        player_xa_model = PlayerXASimpleModel(season, xa_model)
+        player_dc_model = PlayerDCSimpleModel(season, dc_model)
+        # player_xg_model = PlayerXGUltimateModel(season, xg_model)
+        # player_xa_model = PlayerXAUltimateModel(season, xa_model)
 
         gw_predictions = GameweekPredictions(season)
         for gw in range(target_gameweek, target_gameweek + horizon):
             for fixture in Fixtures.get_list(gameweek=gw):
                 gw_predictions.add_team_prediction(cs_model.predict(fixture))
                 for pf in PlayerFixtures.by_fixture(fixture.fixture_id):
+                    gw_predictions.add_player_cs_prediction(PlayerFixtureCsPrediction(player_cs_model.predict(pf)))
                     gw_predictions.add_player_xg_prediction(PlayerFixtureXgPrediction(player_xg_model.predict(pf)))
                     gw_predictions.add_player_xa_prediction(PlayerFixtureXaPrediction(player_xa_model.predict(pf)))
+                    gw_predictions.add_player_dc_prediction(PlayerFixtureDcPrediction(player_dc_model.predict(pf)))
         continue
         loss = AvgDiffLoss()
         target_gameweek_loss = 0.

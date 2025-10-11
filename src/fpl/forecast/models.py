@@ -19,6 +19,9 @@ class FixtureModel:
             away_prediction=self.predict_for_team(fixture.away.team_id, fixture),
         )
 
+    def scale_for_team(self, team_id: int, fixture: Fixture) -> float:
+        return 1.0
+
     def predict_for_team(self, team_id: int, fixture: Fixture) -> Aggregate:
         pass
 
@@ -108,15 +111,19 @@ class XGModel(FixtureModel):
 
 class SimpleXGModel(XGModel):
 
-    def predict_for_team(self, team_id: int, fixture: Fixture) -> Aggregate:
+    def scale_for_team(self, team_id: int, fixture: Fixture) -> float:
         side = 'home' if fixture.home.team_id == team_id else 'away'
         fdr = fixture.home.difficulty if side == 'home' else fixture.away.difficulty
-        team_form = self.season.team_stats[team_id].xg_form_norm_own_3
-        team_fdr_agg = self.season.team_stats[team_id].xg_stats.fdr_aggregate[fdr]
-        if team_fdr_agg.count >= 3:
-            scale = self.season.team_stats[team_id].xg_stats.fdr_norm[fdr]
+        team_xg_stats = self.season.team_stats[team_id].xg_stats
+        if team_xg_stats.fdr_aggregate[fdr].count >= 3:
+            scale = team_xg_stats.fdr_norm[fdr]
         else:
             scale = self.season.xg_stats.fdr_norm[fdr]
+        return scale
+
+    def predict_for_team(self, team_id: int, fixture: Fixture) -> Aggregate:
+        team_form = self.season.team_stats[team_id].xg_form_norm_own_3
+        scale = self.scale_for_team(team_id, fixture)
         return Aggregate(team_form.p * scale, 1)
 
 
@@ -128,16 +135,42 @@ class XAModel(FixtureModel):
 
 class SimpleXAModel(XAModel):
 
-    def predict_for_team(self, team_id: int, fixture: Fixture) -> Aggregate:
+    def scale_for_team(self, team_id: int, fixture: Fixture) -> float:
         side = 'home' if fixture.home.team_id == team_id else 'away'
         fdr = fixture.home.difficulty if side == 'home' else fixture.away.difficulty
-        team_form = self.season.team_stats[team_id].xa_form_norm_own_3
-        team_fdr_agg = self.season.team_stats[team_id].xa_stats.fdr_aggregate[fdr]
-        if team_fdr_agg.count >= 3:
-            scale = self.season.team_stats[team_id].xa_stats.fdr_norm[fdr]
+        team_xa_stats = self.season.team_stats[team_id].xa_stats
+        if team_xa_stats.fdr_aggregate[fdr].count >= 3:
+            scale = team_xa_stats.fdr_norm[fdr]
         else:
             scale = self.season.xa_stats.fdr_norm[fdr]
+        return scale
+
+    def predict_for_team(self, team_id: int, fixture: Fixture) -> Aggregate:
+        team_form = self.season.team_stats[team_id].xa_form_norm_own_3
+        scale = self.scale_for_team(team_id, fixture)
         return Aggregate(team_form.p * scale, 1)
+
+
+class DCModel(FixtureModel):
+
+    def __init__(self, season: Season):
+        self.season = season
+
+
+class SimpleDCModel(DCModel):
+
+    def scale_for_team(self, team_id: int, fixture: Fixture) -> float:
+        side = 'home' if fixture.home.team_id == team_id else 'away'
+        fdr = fixture.home.difficulty if side == 'home' else fixture.away.difficulty
+        team_dc_stats = self.season.team_stats[team_id].dc_stats
+        if team_dc_stats.fdr_aggregate[fdr].count >= 3:
+            scale = team_dc_stats.fdr_norm[fdr]
+        else:
+            scale = self.season.dc_stats.fdr_norm[fdr]
+        return scale
+
+    def predict_for_team(self, team_id: int, fixture: Fixture) -> Aggregate:
+        raise NotImplementedError
 
 
 class PlayerFixtureModel:
@@ -155,6 +188,31 @@ class PlayerFixtureModel:
         pass
 
 
+class PlayerCSSimpleModel(PlayerFixtureModel):
+
+    def __init__(self, season: Season, team_cs_model: CleanSheetModel):
+        super().__init__(season)
+        self.team_cs_model = team_cs_model
+
+    def _predict(self, fixture: PlayerFixture) -> Aggregate:
+        team_cs = self.team_cs_model.predict_for_team(fixture.team_id, fixture.fixture)
+        player_mp = self.season.player_stats[fixture.player_id].mp_last_5
+        p = min(1., player_mp.p / 60.)
+        return Aggregate(team_cs.p * p, 1)
+
+
+class PlayerXGSimpleModel(PlayerFixtureModel):
+
+    def __init__(self, season: Season, team_xg_model: XGModel):
+        super().__init__(season)
+        self.team_xg_model = team_xg_model
+
+    def _predict(self, fixture: PlayerFixture) -> Aggregate:
+        team_scale = self.team_xg_model.scale_for_team(fixture.team_id, fixture.fixture)
+        player_xg = self.season.player_stats[fixture.player_id].xg_last_5
+        return Aggregate(player_xg.p * team_scale, 1)
+
+
 class PlayerXGUltimateModel(PlayerFixtureModel):
 
     def __init__(self, season: Season, team_xg_model: XGModel):
@@ -165,6 +223,18 @@ class PlayerXGUltimateModel(PlayerFixtureModel):
         team_xg = self.team_xg_model.predict_for_team(fixture.team_id, fixture.fixture)
         player_xg_share = self.season.player_stats[fixture.player_id].share_last(5, 'xg')
         return Aggregate(team_xg.total * player_xg_share, team_xg.count)
+
+
+class PlayerXASimpleModel(PlayerFixtureModel):
+
+    def __init__(self, season: Season, team_xa_model: XAModel):
+        super().__init__(season)
+        self.team_xa_model = team_xa_model
+
+    def _predict(self, fixture: PlayerFixture) -> Aggregate:
+        team_scale = self.team_xa_model.scale_for_team(fixture.team_id, fixture.fixture)
+        player_xa = self.season.player_stats[fixture.player_id].xa_last_5
+        return Aggregate(player_xa.p * team_scale, 1)
 
 
 class PlayerXAUltimateModel(PlayerFixtureModel):
@@ -179,3 +249,14 @@ class PlayerXAUltimateModel(PlayerFixtureModel):
         team_xa = self.team_xa_model.predict_for_team(fixture.team_id, fixture.fixture)
         player_xa_share = self.season.player_stats[fixture.player_id].share_last(5, 'xa')
         return Aggregate(team_xa.total * player_xa_share, team_xa.count)
+
+class PlayerDCSimpleModel(PlayerFixtureModel):
+
+    def __init__(self, season: Season, team_dc_model: DCModel):
+        super().__init__(season)
+        self.team_dc_model = team_dc_model
+
+    def _predict(self, fixture: PlayerFixture) -> Aggregate:
+        team_scale = self.team_dc_model.scale_for_team(fixture.team_id, fixture.fixture)
+        player_dc = self.season.player_stats[fixture.player_id].dc_last_5
+        return Aggregate(player_dc.p * team_scale, 1)

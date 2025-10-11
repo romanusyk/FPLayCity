@@ -45,6 +45,10 @@ class TeamFixture:
     def expected_assists(self) -> float:
         return sum([(pf.expected_assists if pf.expected_assists else 0.) for pf in self.player_fixtures])
 
+    @property
+    def defensive_contribution(self) -> int:
+        return sum([(pf.defensive_contribution if pf.defensive_contribution else 0.) for pf in self.player_fixtures])
+
 
 @dataclass
 class Fixture:
@@ -90,6 +94,8 @@ class PlayerFixture:
     minutes: int | None = None
     goals_scored: int | None = None
     assists: int | None = None
+    clean_sheets: int | None = None
+    defensive_contribution: int | None = None
     expected_goals: float | None = None
     expected_assists: float | None = None
     expected_goal_involvements: float | None = None
@@ -162,6 +168,7 @@ class Player:
     web_name: str
     player_type: PlayerType
     team_id: int
+    now_cost: float
 
     @property
     def team(self) -> Team:
@@ -187,6 +194,14 @@ class Player:
     @property
     def assist_points(self) -> int:
         return 3
+
+    @property
+    def dc_points(self) -> float:
+        return {
+            PlayerType.DEF: .1 / 10.,
+            PlayerType.MID: .1 / 12.,
+            PlayerType.FWD: .1 / 12.,
+        }.get(self.player_type, 0.)
 
     def __repr__(self):
         return f'{self.web_name} ({self.player_type.name}) - {self.team.name}'

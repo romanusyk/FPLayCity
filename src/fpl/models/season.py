@@ -1,8 +1,9 @@
 from src.fpl.aggregate import Aggregate
 from src.fpl.models.immutable import Fixture, Teams, PlayerFixture, Players, Player, PlayerType, PlayerFixtures
 from src.fpl.models.stats import (
-    CleanSheetStatsAggregate, XGFixtureStatsAggregate,
-    XAFixtureStatsAggregate, PlayerXGStatsAggregate, PlayerXAStatsAggregate,
+    CleanSheetStatsAggregate,
+    XGFixtureStatsAggregate, XAFixtureStatsAggregate, DCFixtureStatsAggregate,
+    PlayerXGStatsAggregate, PlayerXAStatsAggregate, PlayerDCStatsAggregate,
 )
 
 
@@ -12,6 +13,7 @@ class TeamStats:
     clean_sheet_stats: CleanSheetStatsAggregate
     xg_stats: XGFixtureStatsAggregate
     xa_stats: XAFixtureStatsAggregate
+    dc_stats: DCFixtureStatsAggregate
     season: 'Season'
 
     def __init__(self, team_id: int, season: 'Season'):
@@ -19,20 +21,24 @@ class TeamStats:
         self.clean_sheet_stats = CleanSheetStatsAggregate()
         self.xg_stats = XGFixtureStatsAggregate()
         self.xa_stats = XAFixtureStatsAggregate()
+        self.dc_stats = DCFixtureStatsAggregate()
         self.season = season
 
     def add_fixture_and_stats(self, fixture: Fixture):
         self.clean_sheet_stats.add_fixture(fixture)
         self.xg_stats.add_fixture(fixture)
         self.xa_stats.add_fixture(fixture)
+        self.dc_stats.add_fixture(fixture)
         if fixture.home.team_id == self.team_id:
             self.clean_sheet_stats.add_home_stats(fixture)
             self.xg_stats.add_home_stats(fixture)
             self.xa_stats.add_home_stats(fixture)
+            self.dc_stats.add_home_stats(fixture)
         elif fixture.away.team_id == self.team_id:
             self.clean_sheet_stats.add_away_stats(fixture)
             self.xg_stats.add_away_stats(fixture)
             self.xa_stats.add_away_stats(fixture)
+            self.dc_stats.add_away_stats(fixture)
         else:
             raise ValueError(f"Given {fixture=} contains to {self.team_id=}.")
 
@@ -183,6 +189,7 @@ class PlayerStats:
     fixtures: dict[int, list[PlayerFixture]]
     xg_stats: PlayerXGStatsAggregate
     xa_stats: PlayerXAStatsAggregate
+    dc_stats: PlayerDCStatsAggregate
     season: 'Season'
 
     def __init__(self, player_id: int, season: 'Season'):
@@ -191,6 +198,7 @@ class PlayerStats:
         self.player_id = player_id
         self.xg_stats = PlayerXGStatsAggregate()
         self.xa_stats = PlayerXAStatsAggregate()
+        self.dc_stats = PlayerDCStatsAggregate()
         self.season = season
 
     def add_player_fixture(self, pf: PlayerFixture):
@@ -198,6 +206,19 @@ class PlayerStats:
         self.fixtures[pf.gameweek].append(pf)
         self.xg_stats.add_player_fixture(pf)
         self.xa_stats.add_player_fixture(pf)
+        self.dc_stats.add_player_fixture(pf)
+
+    @property
+    def mp_last_5(self) -> Aggregate:
+        return self.last(5, 'mp')
+
+    @property
+    def mp_last_3(self) -> Aggregate:
+        return self.last(3, 'mp')
+
+    @property
+    def mp_last_1(self) -> Aggregate:
+        return self.last(1, 'mp')
 
     @property
     def xg_last_5(self) -> Aggregate:
@@ -223,6 +244,18 @@ class PlayerStats:
     def xa_last_1(self) -> Aggregate:
         return self.last(1, 'xa')
 
+    @property
+    def dc_last_5(self) -> Aggregate:
+        return self.last(5, 'dc')
+
+    @property
+    def dc_last_3(self) -> Aggregate:
+        return self.last(3, 'dc')
+
+    @property
+    def dc_last_1(self) -> Aggregate:
+        return self.last(1, 'dc')
+
     def share_last(self, n: int, metric: str) -> float:
         player_metric = self.last(n, metric)
         team_metric = (
@@ -239,7 +272,12 @@ class PlayerStats:
         count = 0.
         for i in range(n):
             for pf in self.fixtures[last_gw - i]:
-                total += pf.expected_goals if metric == 'xg' else pf.expected_assists
+                total += {
+                    'mp': pf.minutes,
+                    'xg': pf.expected_goals,
+                    'xa': pf.expected_assists,
+                    'dc': pf.defensive_contribution,
+                }[metric]
                 count += 1
         return Aggregate(total, count)
 
@@ -263,6 +301,7 @@ class Season:
     clean_sheet_stats: CleanSheetStatsAggregate
     xg_stats: XGFixtureStatsAggregate
     xa_stats: XAFixtureStatsAggregate
+    dc_stats: DCFixtureStatsAggregate
     team_stats: dict[int, TeamStats]
     player_stats: dict[int, PlayerStats]
 
@@ -274,6 +313,7 @@ class Season:
         self.clean_sheet_stats = CleanSheetStatsAggregate()
         self.xg_stats = XGFixtureStatsAggregate()
         self.xa_stats = XAFixtureStatsAggregate()
+        self.dc_stats = DCFixtureStatsAggregate()
         self.team_stats = {team.team_id: TeamStats(team.team_id, self) for team in Teams.items}
         self.player_stats = {player_id: PlayerStats(player_id, self) for player_id in Players.items_by_id}
 
@@ -295,6 +335,10 @@ class Season:
             self.xa_stats.add_fixture(fixture)
             self.xa_stats.add_home_stats(fixture)
             self.xa_stats.add_away_stats(fixture)
+
+            self.dc_stats.add_fixture(fixture)
+            self.dc_stats.add_home_stats(fixture)
+            self.dc_stats.add_away_stats(fixture)
 
             self.team_stats[fixture.home.team_id].add_fixture_and_stats(fixture)
             self.team_stats[fixture.away.team_id].add_fixture_and_stats(fixture)

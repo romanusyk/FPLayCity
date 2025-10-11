@@ -65,6 +65,12 @@ class XAFixtureStatsAggregate(FixtureStatsAggregate):
         return Aggregate(fixture.home.expected_assists if side == 'home' else fixture.away.expected_assists, 1)
 
 
+class DCFixtureStatsAggregate(FixtureStatsAggregate):
+
+    def fixture_to_aggregate(self, fixture: Fixture, side: str) -> Aggregate:
+        return Aggregate(fixture.home.defensive_contribution if side == 'home' else fixture.away.defensive_contribution, 1)
+
+
 class PlayerXGStatsAggregate(StatsAggregate):
 
     def add_player_fixture(self, pf: PlayerFixture):
@@ -79,3 +85,8 @@ class PlayerXAStatsAggregate(StatsAggregate):
         self.fdr_aggregate[pf.team_fixture.difficulty] += Aggregate(pf.expected_assists, 1)
 
 
+class PlayerDCStatsAggregate(StatsAggregate):
+
+    def add_player_fixture(self, pf: PlayerFixture):
+        self.side_aggregate[pf.side] += Aggregate(pf.defensive_contribution, 1)
+        self.fdr_aggregate[pf.team_fixture.difficulty] += Aggregate(pf.defensive_contribution, 1)
