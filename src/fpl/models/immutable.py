@@ -49,6 +49,10 @@ class TeamFixture:
     def defensive_contribution(self) -> int:
         return sum([(pf.defensive_contribution if pf.defensive_contribution else 0.) for pf in self.player_fixtures])
 
+    @property
+    def total_points(self) -> int:
+        return sum([pf.total_points or 0. for pf in self.player_fixtures])
+
 
 @dataclass
 class Fixture:

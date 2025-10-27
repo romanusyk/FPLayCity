@@ -71,6 +71,12 @@ class DCFixtureStatsAggregate(FixtureStatsAggregate):
         return Aggregate(fixture.home.defensive_contribution if side == 'home' else fixture.away.defensive_contribution, 1)
 
 
+class PtsFixtureStatsAggregate(FixtureStatsAggregate):
+
+    def fixture_to_aggregate(self, fixture: Fixture, side: str) -> Aggregate:
+        return Aggregate(fixture.home.total_points if side == 'home' else fixture.away.total_points, 1)
+
+
 class PlayerXGStatsAggregate(StatsAggregate):
 
     def add_player_fixture(self, pf: PlayerFixture):

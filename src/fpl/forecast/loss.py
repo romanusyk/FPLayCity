@@ -7,6 +7,15 @@ class Loss:
         pass
 
 
+class MAELoss(Loss):
+
+    def score(self, labels: list[float], predictions: list[float]) -> float:
+        loss = 0.
+        for label, prediction in zip(labels, predictions):
+            loss += abs(label - prediction)
+        return loss / len(labels)
+
+
 class LogLoss(Loss):
 
     def score(self, labels: list[float], predictions: list[float]) -> float:

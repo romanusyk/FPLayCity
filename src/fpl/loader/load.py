@@ -248,7 +248,7 @@ async def bootstrap(client: AsyncClient):
                     goals_scored=fixture['goals_scored'],
                     assists=fixture['assists'],
                     clean_sheets=fixture['clean_sheets'],
-                    defensive_contribution=fixture['defensive_contribution'],
+                    defensive_contribution=fixture.get('defensive_contribution', 0),
                     expected_goals=float(fixture['expected_goals']),
                     expected_assists=float(fixture['expected_assists']),
                     expected_goal_involvements=float(fixture['expected_goal_involvements']),

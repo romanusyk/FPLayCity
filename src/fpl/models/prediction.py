@@ -88,6 +88,16 @@ class PlayerFixtureAggregate:
         self.fixture = fixture
         self.prediction = prediction
 
+    def __repr__(self):
+        return (
+            f'{self.fixture.player} in {self.fixture.fixture}: '
+            f'{self.prediction.p:.1f} | {self.fixture.total_points} = '
+            f'{self.fixture.expected_goals:.1f} xG '
+            f'+ {self.fixture.expected_assists:.1f} xA '
+            f'+ {self.fixture.defensive_contribution} DC '
+            f'+ {self.fixture.clean_sheets:} CS'
+        )
+
 
 class PlayerFixturePrediction:
 
@@ -106,11 +116,11 @@ class PlayerFixturePrediction:
 
     @property
     def predicted(self) -> float:
-        raise NotImplemented
+        raise NotImplementedError
 
     @property
     def actual(self) -> float:
-        raise NotImplemented
+        raise NotImplementedError
 
 
 class PlayerFixtureCsPrediction(PlayerFixturePrediction):
@@ -213,6 +223,10 @@ class PlayerPredictions(Generic[PlayerFixturePredictionT]):
     def actual_sum(self) -> int:
         return sum(pr.actual for pr in self.predictions)
 
+    @property
+    def actual_points(self) -> int:
+        return sum(pr.aggregate.fixture.total_points or 0 for pr in self.predictions)
+
     def __repr__(self):
         summary = []
         for pr in self.predictions:
@@ -265,9 +279,17 @@ class PlayerTotalPrediction:
     def total_points_per_value(self) -> float:
         return self.total_points / self.player.now_cost
 
+    @property
+    def actual_points(self) -> int:
+        return self.xg.actual_points
+
+    @property
+    def actual_points_per_value(self) -> float:
+        return self.actual_points / self.player.now_cost
+
     def __repr__(self):
         return (
-            f'{self.player}: {self.total_points:.1f} ({self.total_points_per_value:.1f}/£) = '
+            f'{self.player}: {self.total_points:.1f} | {self.actual_points} ({self.total_points_per_value:.1f}/£) = '
             f'{self.xg_points:.1f} xG '
             f'+ {self.xa_points:.1f} xA '
             f'+ {self.dc_points:.1f} DC '
@@ -284,10 +306,10 @@ class GameweekPredictions:
     player_dc_predictions: dict[int, PlayerPredictions[PlayerFixtureDcPrediction]]
 
     my_team = [
-        502, 470,
-        291, 575, 72, 191, 541,
-        381, 449, 582, 299, 86,
-        430, 525, 252,
+        # 502, 470,
+        # 291, 575, 72, 191, 541,
+        # 381, 449, 582, 299, 86,
+        # 430, 525, 252,
     ]
 
     def __init__(self, season: Season):
