@@ -248,7 +248,7 @@ class PlayerPredictions(Generic[PlayerFixturePredictionT]):
         for pr in self.predictions:
             summary.append(pr.__repr__())
         return (
-            f"{Players.by_id(self.player_id).web_name}: {self.predicted_sum:.2f} | {self.actual_sum}"
+            f"{Players.get_one(player_id=self.player_id).web_name}: {self.predicted_sum:.2f} | {self.actual_sum}"
             f" = ({', '.join(summary)})"
         )
 
@@ -330,10 +330,10 @@ class GameweekPredictions:
 
     def __init__(self, season: Season):
         self.team_predictions = {team.team_id: TeamPredictions(team.team_id) for team in Teams.items}
-        self.player_cs_predictions = {player_id: PlayerPredictions(player_id) for player_id in Players.items_by_id}
-        self.player_xg_predictions = {player_id: PlayerPredictions(player_id) for player_id in Players.items_by_id}
-        self.player_xa_predictions = {player_id: PlayerPredictions(player_id) for player_id in Players.items_by_id}
-        self.player_dc_predictions = {player_id: PlayerPredictions(player_id) for player_id in Players.items_by_id}
+        self.player_cs_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Players.items}
+        self.player_xg_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Players.items}
+        self.player_xa_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Players.items}
+        self.player_dc_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Players.items}
         self.season = season
 
     def add_team_prediction(self, prediction: FixturePrediction):
@@ -371,7 +371,7 @@ class GameweekPredictions:
     @property
     def players_points_desc(self) -> list[PlayerTotalPrediction]:
         predictions = []
-        for player in Players.items_by_id.values():
+        for player in Players.items:
             if self.season.pos is not None and player.player_type != self.season.pos:
                 continue
             if self.my_team and player.player_id not in self.my_team:

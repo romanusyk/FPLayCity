@@ -218,7 +218,7 @@ class Query:
     @staticmethod
     def player(name: str) -> Player:
         """Find player by name"""
-        return next(p for p in Players.items_by_id.values() 
+        return next(p for p in Players.items 
                    if name.lower() in p.web_name.lower())
     
     @staticmethod
@@ -247,7 +247,7 @@ class Query:
         xa = sum(models['xa'].predict(pf).p for pf in player_fixtures)
         dc = sum(models['dc'].predict(pf).p for pf in player_fixtures)
         
-        player = Players.by_id(player_id)
+        player = Players.get_one(player_id=player_id)
         return PlayerTotalPrediction(
             player=player,
             cs_points=cs * player.clean_sheet_points,
@@ -273,7 +273,7 @@ class Query:
         Change any parameter → recompute with new filter.
         """
         # Filter candidates
-        candidates = Players.items_by_id.values()
+        candidates = Players.items
         if position:
             candidates = [p for p in candidates if p.player_type == position]
         if min_cost:

@@ -279,9 +279,9 @@ class PlayerStats:
     def share_last(self, n: int, metric: str) -> float:
         player_metric = self.last(n, metric)
         team_metric = (
-            self.season.team_stats[Players.by_id(self.player_id).team_id].xg_form(n)
+            self.season.team_stats[Players.get_one(player_id=self.player_id).team_id].xg_form(n)
             if metric == 'xg' else
-            self.season.team_stats[Players.by_id(self.player_id).team_id].xa_form(n)
+            self.season.team_stats[Players.get_one(player_id=self.player_id).team_id].xa_form(n)
         )
         return player_metric.total / team_metric.total if team_metric.count else 0.
 
@@ -304,7 +304,7 @@ class PlayerStats:
 
     @property
     def player(self) -> Player:
-        return Players.by_id(self.player_id)
+        return Players.get_one(player_id=self.player_id)
 
     def __repr__(self):
         return (
@@ -338,7 +338,7 @@ class Season:
         self.dc_stats = DCFixtureStatsAggregate()
         self.pts_stats = PtsFixtureStatsAggregate()
         self.team_stats = {team.team_id: TeamStats(team.team_id, self) for team in Teams.items}
-        self.player_stats = {player_id: PlayerStats(player_id, self) for player_id in Players.items_by_id}
+        self.player_stats = {player.player_id: PlayerStats(player.player_id, self) for player in Players.items}
 
         # view options
         self.pos = None

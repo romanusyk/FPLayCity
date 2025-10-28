@@ -129,7 +129,7 @@ class PlayerFixture:
 
     @property
     def player(self) -> 'Player':
-        return Players.by_id(self.player_id)
+        return Players.get_one(player_id=self.player_id)
 
     @property
     def fixture(self) -> 'Fixture':
@@ -294,19 +294,7 @@ class PlayerFixtures:
         ]
 
 
-class Players:
-
-    items_by_id: dict[int, Player] = {}
-
-    @classmethod
-    def add(cls, pl: Player):
-        assert pl.player_id not in cls.items_by_id
-        cls.items_by_id[pl.player_id] = pl
-
-    @classmethod
-    def by_id(cls, player_id: int) -> Player:
-        return cls.items_by_id[player_id]
-
-    @classmethod
-    def by_team(cls, team_id: int):
-        return [i for i in cls.items_by_id.values() if i.team_id == team_id]
+Players = Collection[Player](
+    simple_indices=[SimpleIndex('player_id')],
+    list_indices=[ListIndex('team_id')],
+)

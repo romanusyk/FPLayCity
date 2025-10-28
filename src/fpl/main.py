@@ -67,7 +67,7 @@ class XG_BY_FDR:
 async def main(client: AsyncClient):
     await bootstrap(client)
 
-    next_gameweek = 38
+    next_gameweek = 9
     min_history_gws = 3
 
     horizon = 3
@@ -155,7 +155,7 @@ async def main(client: AsyncClient):
                 pos_naive_points = 0
                 prs = sorted(
                     filter(
-                        lambda p: Players.by_id(p.fixture.player_id).player_type == pos,
+                        lambda p: Players.get_one(player_id=p.fixture.player_id).player_type == pos,
                         form_predictions,
                     ),
                     key=lambda p: -p.prediction.p,
@@ -165,7 +165,7 @@ async def main(client: AsyncClient):
                 pos_cost_points = 0
                 prs_cost = sorted(
                     filter(
-                        lambda pf: Players.by_id(pf.player_id).player_type == pos,
+                        lambda pf: Players.get_one(player_id=pf.player_id).player_type == pos,
                         by_cost,
                     ),
                     key=lambda pf: -pf.value,

@@ -332,7 +332,7 @@ class PlayerPointsSimpleModel(PlayerFixtureModel):
         self.dc_model = dc_model
 
     def _predict(self, fixture: PlayerFixture) -> Aggregate:
-        player = Players.by_id(fixture.player_id)
+        player = Players.get_one(player_id=fixture.player_id)
         return Aggregate(
             (
                 self.cs_model._predict(fixture).p * player.clean_sheet_points +

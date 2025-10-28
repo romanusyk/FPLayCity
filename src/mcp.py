@@ -75,7 +75,7 @@ async def get_team(team_id: int) -> Team:
     Raises:
         ValueError: If team_id does not exist
     """
-    return Teams.by_id(team_id)
+    return Teams.get_one(team_id=team_id)
 
 @mcp.tool()
 async def get_team_players(team_id: int) -> list[dict]:
@@ -110,7 +110,7 @@ async def get_team_players(team_id: int) -> list[dict]:
             'name': player.web_name,
             'uri': f'epl://player/{player.player_id}'
         }
-        for player in Players.by_team(team_id)
+        for player in Players.get_list(team_id=team_id)
     ]
 
 @mcp.tool()
@@ -127,7 +127,7 @@ async def get_player(player_id: int) -> Player:
     Raises:
         ValueError: If player_id does not exist
     """
-    return Players.by_id(player_id)
+    return Players.get_one(player_id=player_id)
 
 @mcp.tool()
 async def get_predicted_player_points() -> list[str]:
