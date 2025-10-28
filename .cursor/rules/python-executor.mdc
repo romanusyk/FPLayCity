@@ -1,0 +1,66 @@
+---
+globs: *.py
+description: Python execution and testing guidelines for this project
+---
+
+# Python Execution with uv
+
+This project uses `uv` as the Python package manager and script runner.
+
+## Running Python Scripts
+
+**Always use `uv run` instead of plain `python`:**
+
+```bash
+# ✅ Correct
+uv run python script.py
+uv run -m src.fpl.loader.load
+uv run -m src.fpl.main
+
+# ❌ Wrong
+python script.py
+python -m src.fpl.loader.load
+```
+
+## Common Commands
+
+As documented in [README.md](mdc:README.md):
+
+**Load data from FPL API:**
+```bash
+uv run -m src.fpl.loader.load
+```
+
+**Run predictions & evaluation:**
+```bash
+uv run -m src.fpl.main
+```
+
+**Run any Python script or module:**
+```bash
+uv run python path/to/script.py
+uv run -m module.name
+```
+
+## Testing and Validation
+
+When testing functionality or validating changes, always wrap Python commands with `uv run`:
+
+```bash
+# Import testing
+uv run python -c "from src.fpl.models.immutable import Players; print('OK')"
+
+# Running tests
+uv run pytest
+uv run python -m pytest
+
+# Interactive Python
+uv run python  # or uv run ipython
+```
+
+## Why uv?
+
+- Ensures consistent Python environment
+- Manages dependencies automatically
+- Faster than pip/virtualenv
+- Project uses uv for all Python execution
