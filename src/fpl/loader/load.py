@@ -1,3 +1,15 @@
+"""
+Data loader for FPL API with caching and versioning.
+
+Resources:
+- BaseResource: Abstract base for managing versioned JSON snapshots with freshness checks
+- SimpleResource: Loads single API endpoints (bootstrap, fixtures)
+- CompoundResource: Loads multiple related endpoints (player details for all players)
+
+Main functions:
+- bootstrap(): Initial data load - fetches and populates all global collections (Teams, Fixtures, Players, PlayerFixtures)
+- load(): Incremental data refresh - fetches latest data respecting freshness parameter
+"""
 import asyncio
 import json
 import logging

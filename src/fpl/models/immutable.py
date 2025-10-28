@@ -1,3 +1,20 @@
+"""
+Core immutable data models for FPL data.
+
+Classes:
+- Team: FPL team with strength ratings (home/away, attack/defense)
+- TeamFixture: Team's view of a specific fixture (score, difficulty, aggregated xG/xA from players)
+- Fixture: Complete fixture with home/away teams, outcome, clean sheets
+- PlayerFixture: Player's performance in a specific fixture (points, minutes, xG, xA, goals, assists)
+- PlayerType: Enum for player positions (GKP, DEF, MID, FWD)
+- Player: FPL player with type, team, cost, and position-specific point values
+
+Collections (singletons):
+- Teams: Indexed collection of all teams
+- Fixtures: Indexed collection of all fixtures (by ID and gameweek)
+- PlayerFixtures: Collection of all player-fixture records with lookup by fixture/team/player/gw
+- Players: Dictionary of all players by ID
+"""
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum

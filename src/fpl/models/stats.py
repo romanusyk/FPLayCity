@@ -1,3 +1,20 @@
+"""
+Statistics aggregation classes for fixtures and players.
+
+Classes:
+- StatsAggregate: Base aggregator with FDR and side (home/away) breakdowns
+- FixtureStatsAggregate: Base for fixture-level stats (extends StatsAggregate)
+  - CleanSheetStatsAggregate: Aggregates clean sheets by FDR/side
+  - XGFixtureStatsAggregate: Aggregates expected goals by FDR/side
+  - XAFixtureStatsAggregate: Aggregates expected assists by FDR/side
+  - DCFixtureStatsAggregate: Aggregates defensive contribution by FDR/side
+  - PtsFixtureStatsAggregate: Aggregates points by FDR/side
+- PlayerXGStatsAggregate: Aggregates player xG by FDR/side
+- PlayerXAStatsAggregate: Aggregates player xA by FDR/side
+- PlayerDCStatsAggregate: Aggregates player DC by FDR/side
+
+Note: All aggregates track normalized values (fdr_norm) for scaling predictions.
+"""
 from src.fpl.aggregate import Aggregate
 from src.fpl.models.immutable import Fixture, PlayerFixture
 

@@ -1,3 +1,26 @@
+"""
+Main execution script for FPL predictions and model evaluation.
+
+Process:
+1. Bootstrap data from FPL API
+2. Initialize prediction models (CS, xG, xA, DC, points)
+3. Replay season gameweek-by-gameweek:
+   - Build historical statistics
+   - Make predictions for each gameweek
+   - Compare predicted vs actual points
+4. Evaluate performance:
+   - Build optimal squads by position using predictions
+   - Compare vs form-based and cost-based selection
+   - Report total points across evaluation period
+
+Key models used:
+- UltimateCleanSheetModel: FDR-weighted clean sheet predictions
+- SimpleXGModel/SimpleXAModel: Form + FDR scaled predictions
+- PlayerPointsSimpleModel: Component-based player point predictions
+- PlayerPointsFormModel: Recent form scaled by difficulty
+
+Run with: uv run -m src.fpl.main
+"""
 import logging
 from asyncio import new_event_loop
 

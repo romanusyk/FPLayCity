@@ -1,3 +1,12 @@
+"""
+Loss functions for evaluating prediction model performance.
+
+Classes:
+- Loss: Abstract base for loss calculation
+- MAELoss: Mean Absolute Error - measures average prediction error magnitude
+- LogLoss: Logarithmic loss for probabilistic predictions (0-1 range)
+- AvgDiffLoss: Average difference between positive and negative class predictions
+"""
 import math
 
 

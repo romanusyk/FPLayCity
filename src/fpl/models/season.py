@@ -1,3 +1,18 @@
+"""
+Season state management with progressive fixture replay and statistics.
+
+Classes:
+- TeamStats: Per-team statistics aggregator
+  - Tracks CS/xG/xA/DC/points by FDR and side (home/away)
+  - Provides form metrics (last N games) and normalized values
+- PlayerStats: Per-player statistics aggregator
+  - Tracks xG/xA/DC across fixtures
+  - Provides form metrics and team share calculations
+- Season: Main season state container
+  - Replays fixtures gameweek-by-gameweek to build statistics
+  - Maintains global and per-team/player stats
+  - Used as context for all prediction models
+"""
 from src.fpl.aggregate import Aggregate
 from src.fpl.models.immutable import Fixture, Teams, PlayerFixture, Players, Player, PlayerType, PlayerFixtures
 from src.fpl.models.stats import (

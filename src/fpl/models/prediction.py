@@ -1,3 +1,19 @@
+"""
+Prediction result containers and aggregators.
+
+Classes:
+- FixturePrediction: Holds home/away predictions for a fixture
+- TeamPredictions: Collection of fixture predictions for a team with totals
+- PlayerFixtureAggregate: Single player fixture prediction with aggregate value
+- PlayerFixturePrediction: Base for typed player predictions (abstract)
+  - PlayerFixtureCsPrediction: Clean sheet prediction vs actual
+  - PlayerFixtureXgPrediction: Expected goals prediction vs actual
+  - PlayerFixtureXaPrediction: Expected assists prediction vs actual
+  - PlayerFixtureDcPrediction: Defensive contribution prediction vs actual
+- PlayerPredictions: Collection of player fixture predictions with totals (generic over prediction type)
+- PlayerTotalPrediction: Combined player predictions (CS/xG/xA/DC) with total points
+- GameweekPredictions: Aggregator for all team and player predictions in a gameweek
+"""
 from typing import Generic, TypeVar
 
 from src.fpl.aggregate import Aggregate

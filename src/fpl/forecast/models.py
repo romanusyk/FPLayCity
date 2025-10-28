@@ -1,3 +1,32 @@
+"""
+Prediction models for fixtures and player performances.
+
+Fixture-level models (predict team outcomes):
+- CleanSheetModel: Base for clean sheet probability models
+  - SeasonAvgCleanSheetModel: Uses season average
+  - Last5CleanSheetModel: Uses last 5 games form
+  - AllAndFormCleanSheetModel: Combines season avg + form
+  - AvgFDRCleanSheetModel: Based on fixture difficulty rating
+  - AvgSeasonAndFDRCleanSheetModel: Combines season avg + FDR
+  - UltimateCleanSheetModel: Weighted FDR + team side stats
+- XGModel: Base for expected goals models
+  - SimpleXGModel: Team xG scaled by FDR and form
+- XAModel: Base for expected assists models
+  - SimpleXAModel: Team xA scaled by FDR and form
+- DCModel: Base for defensive contribution models
+- PtsModel: Base for points prediction models
+
+Player-level models (predict individual player performances):
+- PlayerCSSimpleModel: Player clean sheet probability (team CS × minutes played)
+- PlayerXGSimpleModel: Player xG (player form × team scale)
+- PlayerXGUltimateModel: Player xG (team xG × player share)
+- PlayerXASimpleModel: Player xA (player form × team scale)
+- PlayerXAUltimateModel: Player xA (team xA × player share)
+- PlayerDCSimpleModel: Player defensive contribution
+- PlayerPointsSimpleModel: Total points from CS/xG/xA/DC components
+- PlayerPointsFormNaiveModel: Simple average of recent points
+- PlayerPointsFormModel: Recent points scaled by team difficulty
+"""
 from src.fpl.aggregate import Aggregate, swa, wa
 from src.fpl.models.immutable import Fixture, PlayerFixture, Players
 from src.fpl.models.prediction import (
