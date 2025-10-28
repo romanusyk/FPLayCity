@@ -109,7 +109,7 @@ async def main(client: AsyncClient):
             for gw in range(target_gameweek, target_gameweek + horizon):
                 for fixture in Fixtures.get_list(gameweek=gw):
                     gw_predictions.add_team_prediction(cs_model.predict(fixture))
-                    for pf in PlayerFixtures.by_fixture(fixture.fixture_id):
+                    for pf in PlayerFixtures.get_list(fixture_id=fixture.fixture_id):
                         gw_predictions.add_player_cs_prediction(PlayerFixtureCsPrediction(player_cs_model.predict(pf)))
                         gw_predictions.add_player_xg_prediction(PlayerFixtureXgPrediction(player_xg_model.predict(pf)))
                         gw_predictions.add_player_xa_prediction(PlayerFixtureXaPrediction(player_xa_model.predict(pf)))
@@ -122,7 +122,7 @@ async def main(client: AsyncClient):
             by_cost = []
             for fixture in Fixtures.get_list(gameweek=target_gameweek):
                 gw_predictions.add_team_prediction(cs_model.predict(fixture))
-                for pf in PlayerFixtures.by_fixture(fixture.fixture_id):
+                for pf in PlayerFixtures.get_list(fixture_id=fixture.fixture_id):
                     gw_predictions.add_player_cs_prediction(
                         PlayerFixtureCsPrediction(player_cs_model.predict(pf))
                         )

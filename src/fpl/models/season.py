@@ -370,7 +370,7 @@ class Season:
             self.team_stats[fixture.home.team_id].add_fixture_and_stats(fixture)
             self.team_stats[fixture.away.team_id].add_fixture_and_stats(fixture)
 
-            for pf in PlayerFixtures.by_fixture(fixture.fixture_id):
+            for pf in PlayerFixtures.get_list(fixture_id=fixture.fixture_id):
                 self.player_stats[pf.player_id].add_player_fixture(pf)
 
         self.gameweek += 1

@@ -162,7 +162,7 @@ player_xg_model = PlayerXGSimpleModel(season, xg_model, min_history_gws)
 **2. Repetitive Prediction Generation**
 ```python
 # Lines 112-116 and 125-137 are nearly identical
-for pf in PlayerFixtures.by_fixture(fixture.fixture_id):
+for pf in PlayerFixtures.get_list(fixture_id=fixture.fixture_id):
     gw_predictions.add_player_cs_prediction(PlayerFixtureCsPrediction(player_cs_model.predict(pf)))
     gw_predictions.add_player_xg_prediction(PlayerFixtureXgPrediction(player_xg_model.predict(pf)))
     # ... 4 lines of similar code
@@ -238,7 +238,7 @@ class Query:
         gameweek: int,
     ) -> PlayerTotalPrediction:
         """Predict single player for single gameweek (pure function)"""
-        player_fixtures = [pf for pf in PlayerFixtures.by_gw(gameweek)
+        player_fixtures = [pf for pf in PlayerFixtures.get_list(gameweek=gameweek)
                           if pf.player_id == player_id]
         
         # Compute components on demand

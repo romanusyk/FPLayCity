@@ -52,7 +52,7 @@ class TeamFixture:
 
     @property
     def player_fixtures(self) -> list['PlayerFixture']:
-        return PlayerFixtures.by_fixture_and_team(self.fixture_id, self.team_id)
+        return PlayerFixtures.get_list(fixture_id=self.fixture_id, team_id=self.team_id)
 
     @property
     def expected_goals(self) -> float:
@@ -236,62 +236,19 @@ Fixtures = Collection[Fixture](
 )
 
 
-class PlayerFixtures:
-
-    items: list[PlayerFixture] = []
-    _by_fixture_and_team: dict[tuple[int, int], list[PlayerFixture]] = defaultdict(list)
-    _by_fixture_and_player: dict[tuple[int, int], PlayerFixture] = {}
-
-    @classmethod
-    def add(cls, pf: PlayerFixture):
-        cls.items.append(pf)
-        cls._by_fixture_and_team[(pf.fixture_id, pf.team_id)].append(pf)
-        assert (pf.fixture_id, pf.player_id) not in cls._by_fixture_and_player
-        cls._by_fixture_and_player[(pf.fixture_id, pf.player_id)] = pf
-
-    @classmethod
-    def by_fixture_and_team(cls, fixture_id: int, team_id: int) -> list[PlayerFixture]:
-        return cls._by_fixture_and_team[(fixture_id, team_id)]
-
-    @classmethod
-    def by_fixture_and_player(cls, fixture_id: int, player_id: int) -> PlayerFixture:
-        return cls._by_fixture_and_player[(fixture_id, player_id)]
-
-    @classmethod
-    def by_player(cls, player_id: int):
-        return [i for i in cls.items if i.player_id == player_id]
-
-    @classmethod
-    def by_fixture(cls, fixture_id: int) -> list[PlayerFixture]:
-        return [i for i in cls.items if i.fixture_id == fixture_id]
-
-    @classmethod
-    def by_team(cls, team_id: int):
-        return [
-            i for i in cls.items
-            if (
-                Fixtures.get_one(fixture_id=i.fixture_id).home.team_id == team_id
-                if i.was_home
-                else Fixtures.get_one(fixture_id=i.fixture_id).away.team_id == team_id
-            )
-        ]
-
-    @classmethod
-    def by_gw(cls, gw: int):
-        return [i for i in cls.items if Fixtures.get_one(fixture_id=i.fixture_id).gameweek == gw]
-
-    @classmethod
-    def by_team_and_gw(cls, team_id: int, gw: int):
-        return [
-            i for i in cls.items if (
-                (
-                    Fixtures.get_one(fixture_id=i.fixture_id).home.team_id == team_id
-                    if i.was_home
-                    else Fixtures.get_one(fixture_id=i.fixture_id).away.team_id == team_id
-                )
-                & (Fixtures.get_one(fixture_id=i.fixture_id).gameweek == gw)
-            )
-        ]
+PlayerFixtures = Collection[PlayerFixture](
+    simple_indices=[
+        SimpleIndex('fixture_id', 'player_id'),  # Unique: one player per fixture
+    ],
+    list_indices=[
+        ListIndex('fixture_id', 'team_id'),      # by_fixture_and_team
+        ListIndex('player_id'),                  # by_player
+        ListIndex('fixture_id'),                 # by_fixture
+        ListIndex('team_id'),                    # by_team (uses computed property!)
+        ListIndex('gameweek'),                   # by_gw
+        ListIndex('team_id', 'gameweek'),        # by_team_and_gw
+    ],
+)
 
 
 Players = Collection[Player](

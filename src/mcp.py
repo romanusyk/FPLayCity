@@ -169,7 +169,7 @@ if __name__ == "__main__":
     for gw in range(36, 39):
         for fixture in Fixtures.get_list(gameweek=gw):
             gw_predictions.add_team_prediction(cs_model.predict(fixture))
-            for pf in PlayerFixtures.by_fixture(fixture.fixture_id):
+            for pf in PlayerFixtures.get_list(fixture_id=fixture.fixture_id):
                 gw_predictions.add_player_xg_prediction(
                     PlayerFixtureXgPrediction(player_xg_model.predict(pf))
                     )
