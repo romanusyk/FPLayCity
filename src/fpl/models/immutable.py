@@ -13,7 +13,14 @@ Collections (singletons):
 - Teams: Indexed collection of all teams
 - Fixtures: Indexed collection of all fixtures (by ID and gameweek)
 - PlayerFixtures: Collection of all player-fixture records with lookup by fixture/team/player/gw
-- Players: Dictionary of all players by ID
+- Players: Indexed collection of all players
+
+Facade:
+- Query: Convenient facade providing readable methods for all collection indices
+  - Team lookups: team(id)
+  - Fixture lookups: fixture(id), fixtures_by_gameweek(gw)
+  - Player lookups: player(id), players_by_team(id), player_by_name(name)
+  - PlayerFixture lookups: All supported index combinations
 """
 from collections import defaultdict
 from dataclasses import dataclass
@@ -255,3 +262,124 @@ Players = Collection[Player](
     simple_indices=[SimpleIndex('player_id')],
     list_indices=[ListIndex('team_id')],
 )
+
+
+class Query:
+    """
+    Facade for easy access to all collections.
+    
+    Provides readable method names for all supported indices.
+    All methods are stateless and delegate to the underlying collections.
+    """
+    
+    # --- Teams ---
+    
+    @staticmethod
+    def team(team_id: int) -> Team:
+        """Get team by ID."""
+        return Teams.get_one(team_id=team_id)
+    
+    # --- Fixtures ---
+    
+    @staticmethod
+    def fixture(fixture_id: int) -> Fixture:
+        """Get fixture by ID."""
+        return Fixtures.get_one(fixture_id=fixture_id)
+    
+    @staticmethod
+    def fixtures_by_gameweek(gameweek: int) -> list[Fixture]:
+        """Get all fixtures in a gameweek."""
+        return Fixtures.get_list(gameweek=gameweek)
+    
+    # --- PlayerFixtures ---
+    
+    @staticmethod
+    def player_fixture(fixture_id: int, player_id: int) -> PlayerFixture:
+        """Get specific player's fixture (unique)."""
+        return PlayerFixtures.get_one(fixture_id=fixture_id, player_id=player_id)
+    
+    @staticmethod
+    def player_fixtures_by_fixture_and_team(fixture_id: int, team_id: int) -> list[PlayerFixture]:
+        """Get all players from a team in a specific fixture."""
+        return PlayerFixtures.get_list(fixture_id=fixture_id, team_id=team_id)
+    
+    @staticmethod
+    def player_fixtures_by_player(player_id: int) -> list[PlayerFixture]:
+        """Get all fixtures for a player."""
+        return PlayerFixtures.get_list(player_id=player_id)
+    
+    @staticmethod
+    def player_fixtures_by_fixture(fixture_id: int) -> list[PlayerFixture]:
+        """Get all player fixtures in a specific fixture."""
+        return PlayerFixtures.get_list(fixture_id=fixture_id)
+    
+    @staticmethod
+    def player_fixtures_by_team(team_id: int) -> list[PlayerFixture]:
+        """Get all player fixtures for a team (uses computed property)."""
+        return PlayerFixtures.get_list(team_id=team_id)
+    
+    @staticmethod
+    def player_fixtures_by_gameweek(gameweek: int) -> list[PlayerFixture]:
+        """Get all player fixtures in a gameweek."""
+        return PlayerFixtures.get_list(gameweek=gameweek)
+    
+    @staticmethod
+    def player_fixtures_by_team_and_gameweek(team_id: int, gameweek: int) -> list[PlayerFixture]:
+        """Get all player fixtures for a team in a specific gameweek."""
+        return PlayerFixtures.get_list(team_id=team_id, gameweek=gameweek)
+    
+    # --- Players ---
+    
+    @staticmethod
+    def player(player_id: int) -> Player:
+        """Get player by ID."""
+        return Players.get_one(player_id=player_id)
+    
+    @staticmethod
+    def players_by_team(team_id: int) -> list[Player]:
+        """Get all players in a team."""
+        return Players.get_list(team_id=team_id)
+    
+    @staticmethod
+    def player_by_name(name: str) -> Player:
+        """
+        Find player by name (case-insensitive partial match).
+        
+        Args:
+            name: Player name or partial name to search for
+            
+        Returns:
+            Player: First matching player
+            
+        Raises:
+            StopIteration: If no player found with that name
+            
+        Example:
+            >>> Query.player_by_name("Salah")
+            >>> Query.player_by_name("haaland")
+        """
+        return next(
+            p for p in Players.items
+            if name.lower() in p.web_name.lower()
+        )
+    
+    @staticmethod
+    def players_by_name(name: str) -> list[Player]:
+        """
+        Find all players matching name (case-insensitive partial match).
+        
+        Useful when multiple players match (e.g., "Silva").
+        
+        Args:
+            name: Player name or partial name to search for
+            
+        Returns:
+            list[Player]: All matching players
+            
+        Example:
+            >>> Query.players_by_name("Silva")  # Returns B. Silva, Nunes, etc.
+        """
+        return [
+            p for p in Players.items
+            if name.lower() in p.web_name.lower()
+        ]

@@ -391,3 +391,31 @@ Run predictions & evaluation:
 ```bash
 uv run -m src.fpl.main
 ```
+
+## Testing
+
+Run unit tests:
+```bash
+uv run pytest
+```
+
+Run with verbose output:
+```bash
+uv run pytest -v
+```
+
+Run specific test file:
+```bash
+uv run pytest tests/test_immutable.py
+```
+
+Run specific test class or method:
+```bash
+uv run pytest tests/test_immutable.py::TestQueryFacade::test_query_player_by_name
+```
+
+**Test Coverage:**
+- ✅ Collections: Teams, Fixtures, Players, PlayerFixtures
+- ✅ Query facade: All lookup methods
+- ✅ Data integrity: Relationships and computed properties
+- ⚠️ Unsupported indices: Tests verify they raise `KeyError`
