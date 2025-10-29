@@ -17,7 +17,7 @@ Classes:
 from typing import Generic, TypeVar
 
 from src.fpl.aggregate import Aggregate
-from src.fpl.models.immutable import Fixture, Teams, PlayerFixture, Players, Player
+from src.fpl.models.immutable import Fixture, PlayerFixture, Player, Query
 from src.fpl.models.season import Season
 
 
@@ -35,9 +35,9 @@ class FixturePrediction:
     def __repr__(self):
         return (
             f'{self.home_prediction} '
-            f'{Teams.get_one(team_id=self.fixture.home.team_id).name} '
+            f'{Query.team(self.fixture.home.team_id).name} '
             f'{self.fixture.home.score}:{self.fixture.away.score} '
-            f'{Teams.get_one(team_id=self.fixture.away.team_id).name} '
+            f'{Query.team(self.fixture.away.team_id).name} '
             f'{self.away_prediction}'
         )
 
@@ -88,9 +88,9 @@ class TeamPredictions:
                 else pr.away_prediction
             )
             full_score = f'{pr.fixture.home.score}:{pr.fixture.away.score}'
-            summary.append(f"{Teams.get_one(team_id=opponent.team_id).name} ({side}) {full_score} = {aggregate.p:.2f}")
+            summary.append(f"{Query.team(opponent.team_id).name} ({side}) {full_score} = {aggregate.p:.2f}")
         return (
-            f"{Teams.get_one(team_id=self.team_id).name}: {self.predicted_sum:.2f} | {self.actual_sum}"
+            f"{Query.team(self.team_id).name}: {self.predicted_sum:.2f} | {self.actual_sum}"
             f" = ({', '.join(summary)})"
         )
 
@@ -248,7 +248,7 @@ class PlayerPredictions(Generic[PlayerFixturePredictionT]):
         for pr in self.predictions:
             summary.append(pr.__repr__())
         return (
-            f"{Players.get_one(player_id=self.player_id).web_name}: {self.predicted_sum:.2f} | {self.actual_sum}"
+            f"{Query.player(self.player_id).web_name}: {self.predicted_sum:.2f} | {self.actual_sum}"
             f" = ({', '.join(summary)})"
         )
 
@@ -329,11 +329,11 @@ class GameweekPredictions:
     ]
 
     def __init__(self, season: Season):
-        self.team_predictions = {team.team_id: TeamPredictions(team.team_id) for team in Teams.items}
-        self.player_cs_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Players.items}
-        self.player_xg_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Players.items}
-        self.player_xa_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Players.items}
-        self.player_dc_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Players.items}
+        self.team_predictions = {team.team_id: TeamPredictions(team.team_id) for team in Query.all_teams()}
+        self.player_cs_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Query.all_players()}
+        self.player_xg_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Query.all_players()}
+        self.player_xa_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Query.all_players()}
+        self.player_dc_predictions = {player.player_id: PlayerPredictions(player.player_id) for player in Query.all_players()}
         self.season = season
 
     def add_team_prediction(self, prediction: FixturePrediction):
@@ -371,7 +371,7 @@ class GameweekPredictions:
     @property
     def players_points_desc(self) -> list[PlayerTotalPrediction]:
         predictions = []
-        for player in Players.items:
+        for player in Query.all_players():
             if self.season.pos is not None and player.player_type != self.season.pos:
                 continue
             if self.my_team and player.player_id not in self.my_team:

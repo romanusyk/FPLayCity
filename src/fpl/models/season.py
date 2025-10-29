@@ -14,7 +14,7 @@ Classes:
   - Used as context for all prediction models
 """
 from src.fpl.aggregate import Aggregate
-from src.fpl.models.immutable import Fixture, Teams, PlayerFixture, Players, Player, PlayerType, PlayerFixtures
+from src.fpl.models.immutable import Fixture, PlayerFixture, Player, PlayerType, Query
 from src.fpl.models.stats import (
     CleanSheetStatsAggregate,
     XGFixtureStatsAggregate, XAFixtureStatsAggregate, DCFixtureStatsAggregate, PtsFixtureStatsAggregate,
@@ -200,7 +200,7 @@ class TeamStats:
 
     @property
     def team_name(self) -> str:
-        return Teams.get_one(team_id=self.team_id).name
+        return Query.team(self.team_id).name
 
 
 class PlayerStats:
@@ -279,9 +279,9 @@ class PlayerStats:
     def share_last(self, n: int, metric: str) -> float:
         player_metric = self.last(n, metric)
         team_metric = (
-            self.season.team_stats[Players.get_one(player_id=self.player_id).team_id].xg_form(n)
+            self.season.team_stats[Query.player(self.player_id).team_id].xg_form(n)
             if metric == 'xg' else
-            self.season.team_stats[Players.get_one(player_id=self.player_id).team_id].xa_form(n)
+            self.season.team_stats[Query.player(self.player_id).team_id].xa_form(n)
         )
         return player_metric.total / team_metric.total if team_metric.count else 0.
 
@@ -304,7 +304,7 @@ class PlayerStats:
 
     @property
     def player(self) -> Player:
-        return Players.get_one(player_id=self.player_id)
+        return Query.player(self.player_id)
 
     def __repr__(self):
         return (
@@ -337,8 +337,8 @@ class Season:
         self.xa_stats = XAFixtureStatsAggregate()
         self.dc_stats = DCFixtureStatsAggregate()
         self.pts_stats = PtsFixtureStatsAggregate()
-        self.team_stats = {team.team_id: TeamStats(team.team_id, self) for team in Teams.items}
-        self.player_stats = {player.player_id: PlayerStats(player.player_id, self) for player in Players.items}
+        self.team_stats = {team.team_id: TeamStats(team.team_id, self) for team in Query.all_teams()}
+        self.player_stats = {player.player_id: PlayerStats(player.player_id, self) for player in Query.all_players()}
 
         # view options
         self.pos = None
@@ -370,7 +370,7 @@ class Season:
             self.team_stats[fixture.home.team_id].add_fixture_and_stats(fixture)
             self.team_stats[fixture.away.team_id].add_fixture_and_stats(fixture)
 
-            for pf in PlayerFixtures.get_list(fixture_id=fixture.fixture_id):
+            for pf in Query.player_fixtures_by_fixture(fixture.fixture_id):
                 self.player_stats[pf.player_id].add_player_fixture(pf)
 
         self.gameweek += 1

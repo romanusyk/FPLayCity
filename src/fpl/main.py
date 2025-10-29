@@ -35,9 +35,7 @@ from src.fpl.forecast.models import (
 )
 from src.fpl.loader.load import bootstrap
 from src.fpl.models.immutable import (
-    Fixtures,
-    PlayerFixtures,
-    PlayerType, Players,
+    PlayerType, Query,
 )
 from src.fpl.models.prediction import (
     PlayerFixtureCsPrediction,
@@ -103,13 +101,13 @@ async def main(client: AsyncClient):
     player_points_naive_model = PlayerPointsFormModel(season, pts_model, min_history_gws)
 
     for target_gameweek in range(2, next_gameweek + 1):
-        season.play(Fixtures.get_list(gameweek=target_gameweek - 1))
+        season.play(Query.fixtures_by_gameweek(target_gameweek - 1))
         if target_gameweek == next_gameweek:
             gw_predictions = GameweekPredictions(season)
             for gw in range(target_gameweek, target_gameweek + horizon):
-                for fixture in Fixtures.get_list(gameweek=gw):
+                for fixture in Query.fixtures_by_gameweek(gw):
                     gw_predictions.add_team_prediction(cs_model.predict(fixture))
-                    for pf in PlayerFixtures.get_list(fixture_id=fixture.fixture_id):
+                    for pf in Query.player_fixtures_by_fixture(fixture.fixture_id):
                         gw_predictions.add_player_cs_prediction(PlayerFixtureCsPrediction(player_cs_model.predict(pf)))
                         gw_predictions.add_player_xg_prediction(PlayerFixtureXgPrediction(player_xg_model.predict(pf)))
                         gw_predictions.add_player_xa_prediction(PlayerFixtureXaPrediction(player_xa_model.predict(pf)))
@@ -120,9 +118,9 @@ async def main(client: AsyncClient):
             gw_predictions = GameweekPredictions(season)
             form_predictions = []
             by_cost = []
-            for fixture in Fixtures.get_list(gameweek=target_gameweek):
+            for fixture in Query.fixtures_by_gameweek(target_gameweek):
                 gw_predictions.add_team_prediction(cs_model.predict(fixture))
-                for pf in PlayerFixtures.get_list(fixture_id=fixture.fixture_id):
+                for pf in Query.player_fixtures_by_fixture(fixture.fixture_id):
                     gw_predictions.add_player_cs_prediction(
                         PlayerFixtureCsPrediction(player_cs_model.predict(pf))
                         )
@@ -155,7 +153,7 @@ async def main(client: AsyncClient):
                 pos_naive_points = 0
                 prs = sorted(
                     filter(
-                        lambda p: Players.get_one(player_id=p.fixture.player_id).player_type == pos,
+                        lambda p: Query.player(p.fixture.player_id).player_type == pos,
                         form_predictions,
                     ),
                     key=lambda p: -p.prediction.p,
@@ -165,7 +163,7 @@ async def main(client: AsyncClient):
                 pos_cost_points = 0
                 prs_cost = sorted(
                     filter(
-                        lambda pf: Players.get_one(player_id=pf.player_id).player_type == pos,
+                        lambda pf: Query.player(pf.player_id).player_type == pos,
                         by_cost,
                     ),
                     key=lambda pf: -pf.value,

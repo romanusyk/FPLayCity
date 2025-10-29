@@ -28,7 +28,7 @@ Player-level models (predict individual player performances):
 - PlayerPointsFormModel: Recent points scaled by team difficulty
 """
 from src.fpl.aggregate import Aggregate, swa, wa
-from src.fpl.models.immutable import Fixture, PlayerFixture, Players
+from src.fpl.models.immutable import Fixture, PlayerFixture, Query
 from src.fpl.models.prediction import (
     FixturePrediction,
     PlayerFixtureAggregate,
@@ -332,7 +332,7 @@ class PlayerPointsSimpleModel(PlayerFixtureModel):
         self.dc_model = dc_model
 
     def _predict(self, fixture: PlayerFixture) -> Aggregate:
-        player = Players.get_one(player_id=fixture.player_id)
+        player = Query.player(fixture.player_id)
         return Aggregate(
             (
                 self.cs_model._predict(fixture).p * player.clean_sheet_points +

@@ -4,7 +4,7 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
-from src.fpl.models.immutable import Team, Teams, Player, Players, Fixtures, PlayerFixtures
+from src.fpl.models.immutable import Team, Player, Query
 from src.fpl.loader.load import bootstrap
 from src.fpl.forecast.models import (
     UltimateCleanSheetModel, SimpleXGModel, SimpleXAModel,
@@ -58,7 +58,7 @@ async def get_teams() -> list[dict]:
             'name': team.name,
             'uri': f'epl://team/{team.team_id}'
         }
-        for team in Teams.items
+        for team in Query.all_teams()
     ]
 
 @mcp.tool()
@@ -75,7 +75,7 @@ async def get_team(team_id: int) -> Team:
     Raises:
         ValueError: If team_id does not exist
     """
-    return Teams.get_one(team_id=team_id)
+    return Query.team(team_id)
 
 @mcp.tool()
 async def get_team_players(team_id: int) -> list[dict]:
@@ -110,7 +110,7 @@ async def get_team_players(team_id: int) -> list[dict]:
             'name': player.web_name,
             'uri': f'epl://player/{player.player_id}'
         }
-        for player in Players.get_list(team_id=team_id)
+        for player in Query.players_by_team(team_id)
     ]
 
 @mcp.tool()
@@ -127,7 +127,7 @@ async def get_player(player_id: int) -> Player:
     Raises:
         ValueError: If player_id does not exist
     """
-    return Players.get_one(player_id=player_id)
+    return Query.player(player_id)
 
 @mcp.tool()
 async def get_predicted_player_points() -> list[str]:
@@ -158,7 +158,7 @@ if __name__ == "__main__":
     asyncio.run(bootstrap(client))
     season = Season()
     for game_week in range(1, 36):
-        season.play(Fixtures.get_list(gameweek=game_week))
+        season.play(Query.fixtures_by_gameweek(game_week))
     cs_model = UltimateCleanSheetModel(season)
     xg_model = SimpleXGModel(season)
     xa_model = SimpleXAModel(season)
@@ -167,9 +167,9 @@ if __name__ == "__main__":
 
     gw_predictions = GameweekPredictions(season)
     for gw in range(36, 39):
-        for fixture in Fixtures.get_list(gameweek=gw):
+        for fixture in Query.fixtures_by_gameweek(gw):
             gw_predictions.add_team_prediction(cs_model.predict(fixture))
-            for pf in PlayerFixtures.get_list(fixture_id=fixture.fixture_id):
+            for pf in Query.player_fixtures_by_fixture(fixture.fixture_id):
                 gw_predictions.add_player_xg_prediction(
                     PlayerFixtureXgPrediction(player_xg_model.predict(pf))
                     )

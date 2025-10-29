@@ -279,6 +279,11 @@ class Query:
         """Get team by ID."""
         return Teams.get_one(team_id=team_id)
     
+    @staticmethod
+    def all_teams() -> list[Team]:
+        """Get all teams."""
+        return Teams.items
+    
     # --- Fixtures ---
     
     @staticmethod
@@ -339,6 +344,11 @@ class Query:
     def players_by_team(team_id: int) -> list[Player]:
         """Get all players in a team."""
         return Players.get_list(team_id=team_id)
+    
+    @staticmethod
+    def all_players() -> list[Player]:
+        """Get all players."""
+        return Players.items
     
     @staticmethod
     def player_by_name(name: str) -> Player:
