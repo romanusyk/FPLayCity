@@ -1,23 +1,18 @@
 """
-Main execution script for FPL predictions and model evaluation.
+Main execution script for FPL predictions using lazy computation pipeline.
 
 Process:
 1. Bootstrap data from FPL API
-2. Initialize prediction models (CS, xG, xA, DC, points)
-3. Replay season gameweek-by-gameweek:
-   - Build historical statistics
-   - Make predictions for each gameweek
-   - Compare predicted vs actual points
+2. Create lazy computation pipeline
+3. Generate predictions for target gameweek(s) with automatic caching
 4. Evaluate performance:
-   - Build optimal squads by position using predictions
-   - Compare vs form-based and cost-based selection
+   - Compare model predictions vs form-based and cost-based selection
    - Report total points across evaluation period
 
-Key models used:
-- UltimateCleanSheetModel: FDR-weighted clean sheet predictions
-- SimpleXGModel/SimpleXAModel: Form + FDR scaled predictions
-- PlayerPointsSimpleModel: Component-based player point predictions
-- PlayerPointsFormModel: Recent form scaled by difficulty
+Key features:
+- Lazy evaluation: Only compute what's needed
+- Automatic caching: Reuse results for same parameters
+- Type-safe computation graph
 
 Run with: uv run -m src.fpl.main
 """
@@ -26,25 +21,11 @@ from asyncio import new_event_loop
 
 from httpx import AsyncClient
 
-from src.fpl.forecast.loss import AvgDiffLoss, MAELoss
-from src.fpl.forecast.models import (
-    UltimateCleanSheetModel, SimpleXGModel, SimpleXAModel, SimpleDCModel, SimplePtsModel,
-    PlayerXGUltimateModel, PlayerXAUltimateModel,
-    PlayerCSSimpleModel, PlayerXGSimpleModel, PlayerXASimpleModel, PlayerDCSimpleModel,
-    PlayerPointsSimpleModel, PlayerPointsFormNaiveModel, PlayerPointsFormModel,
-)
 from src.fpl.loader.load import bootstrap
-from src.fpl.models.immutable import (
-    PlayerType, Query,
-)
-from src.fpl.models.prediction import (
-    PlayerFixtureCsPrediction,
-    PlayerFixtureXgPrediction,
-    PlayerFixtureXaPrediction,
-    PlayerFixtureDcPrediction,
-    GameweekPredictions,
-)
+from src.fpl.compute.prediction import PredictionPipeline
+from src.fpl.models.immutable import PlayerType, Query
 from src.fpl.models.season import Season
+from src.fpl.forecast.models import SimplePtsModel, PlayerPointsFormModel
 
 logging.basicConfig(level=logging.INFO)
 
@@ -63,158 +44,112 @@ class XG_BY_FDR:
 
 
 async def main(client: AsyncClient):
+    logging.info("Loading FPL data...")
     await bootstrap(client)
-
-    next_gameweek = 9
-    min_history_gws = 3
-
-    horizon = 3
-    season = Season()
-    total_team_loss = 0.
-    total_player_loss = 0.
-
+    
+    next_gameweek = 10
+    min_history_gws = 5
+    horizon = 2
+    
+    logging.info("Creating lazy computation pipeline...")
+    pipeline = PredictionPipeline()
+    
+    logging.info(f"\n=== Predictions for GWs {next_gameweek} to {next_gameweek + horizon - 1} ===")
+    predictions = pipeline.predict(
+        next_gameweek=next_gameweek,
+        target_gameweek=next_gameweek,
+        horizon=horizon,
+        min_history_gws=min_history_gws
+    )
+    
+    logging.info(f"Cache info: {pipeline.cache_info}")
+    logging.info(f"\nTop 10 players by predicted points:")
+    for i, player in enumerate(predictions.players_total_points_desc[:10], 1):
+        logging.info(f"{i}. {player}")
+    
+    logging.info(f"\nTop 5 teams by predicted clean sheets:")
+    for i, team_prediction in enumerate(predictions.teams_total_cs_desc[:5], 1):
+        logging.info(f"{i}. {team_prediction.team}: {team_prediction.cs_prediction} CS predicted")
+    
+    logging.info(f"\n=== Backtesting from GW {min_history_gws + 1} to {next_gameweek - 1} ===")
+    
     total_points = 0
     total_naive_points = 0
     total_cost_points = 0
     total_weeks = 0
-
-    cs_model = UltimateCleanSheetModel(season)
-    xg_model = SimpleXGModel(season)
-    xa_model = SimpleXAModel(season)
-    dc_model = SimpleDCModel(season)
-    pts_model = SimplePtsModel(season)
-    player_cs_model = PlayerCSSimpleModel(season, cs_model, min_history_gws)
-    player_xg_model = PlayerXGSimpleModel(season, xg_model, min_history_gws)
-    player_xa_model = PlayerXASimpleModel(season, xa_model, min_history_gws)
-    player_dc_model = PlayerDCSimpleModel(season, dc_model, min_history_gws)
-    # player_xg_model = PlayerXGUltimateModel(season, xg_model)
-    # player_xa_model = PlayerXAUltimateModel(season, xa_model)
-    player_points_model = PlayerPointsSimpleModel(
-        season=season,
-        cs_model=player_cs_model,
-        xg_model=player_xg_model,
-        xa_model=player_xa_model,
-        dc_model=player_dc_model,
-        last_n_weeks=min_history_gws,
-    )
-    # player_points_naive_model = PlayerPointsFormNaiveModel(season, min_history_gws)
-    player_points_naive_model = PlayerPointsFormModel(season, pts_model, min_history_gws)
-
-    for target_gameweek in range(2, next_gameweek + 1):
-        season.play(Query.fixtures_by_gameweek(target_gameweek - 1))
-        if target_gameweek == next_gameweek:
-            gw_predictions = GameweekPredictions(season)
-            for gw in range(target_gameweek, target_gameweek + horizon):
-                for fixture in Query.fixtures_by_gameweek(gw):
-                    gw_predictions.add_team_prediction(cs_model.predict(fixture))
-                    for pf in Query.player_fixtures_by_fixture(fixture.fixture_id):
-                        gw_predictions.add_player_cs_prediction(PlayerFixtureCsPrediction(player_cs_model.predict(pf)))
-                        gw_predictions.add_player_xg_prediction(PlayerFixtureXgPrediction(player_xg_model.predict(pf)))
-                        gw_predictions.add_player_xa_prediction(PlayerFixtureXaPrediction(player_xa_model.predict(pf)))
-                        gw_predictions.add_player_dc_prediction(PlayerFixtureDcPrediction(player_dc_model.predict(pf)))
-            logging.info(f'Predictions for the given {horizon=} are Hot to Go!')
-
-        if target_gameweek > min_history_gws and target_gameweek < next_gameweek:
-            gw_predictions = GameweekPredictions(season)
-            form_predictions = []
-            by_cost = []
-            for fixture in Query.fixtures_by_gameweek(target_gameweek):
-                gw_predictions.add_team_prediction(cs_model.predict(fixture))
-                for pf in Query.player_fixtures_by_fixture(fixture.fixture_id):
-                    gw_predictions.add_player_cs_prediction(
-                        PlayerFixtureCsPrediction(player_cs_model.predict(pf))
-                        )
-                    gw_predictions.add_player_xg_prediction(
-                        PlayerFixtureXgPrediction(player_xg_model.predict(pf))
-                        )
-                    gw_predictions.add_player_xa_prediction(
-                        PlayerFixtureXaPrediction(player_xa_model.predict(pf))
-                        )
-                    gw_predictions.add_player_dc_prediction(
-                        PlayerFixtureDcPrediction(player_dc_model.predict(pf))
-                        )
-                    form_predictions.append(player_points_naive_model.predict(pf))
-                    if season.player_stats[pf.player_id].last(min_history_gws, 'mp').p > 60 and season.player_stats[pf.player_id].last(1, 'mp').p > 30:
-                        by_cost.append(pf)
-            gw_points = 0
-            gw_naive_points = 0
-            gw_cost_points = 0
-            for pos, count in (
-                (PlayerType.GKP, 2),
-                (PlayerType.DEF, 5),
-                (PlayerType.MID, 5),
-                (PlayerType.FWD, 3),
-            ):
-                season.pos = pos
-                predictions = gw_predictions.players_points_desc[:count]
-                pos_points = 0
-                for pr in predictions:
-                    pos_points += pr.actual_points
-                pos_naive_points = 0
-                prs = sorted(
-                    filter(
-                        lambda p: Query.player(p.fixture.player_id).player_type == pos,
-                        form_predictions,
-                    ),
-                    key=lambda p: -p.prediction.p,
-                )[:count]
-                for pr in prs:
-                    pos_naive_points += pr.fixture.total_points
-                pos_cost_points = 0
-                prs_cost = sorted(
-                    filter(
-                        lambda pf: Query.player(pf.player_id).player_type == pos,
-                        by_cost,
-                    ),
-                    key=lambda pf: -pf.value,
-                )[:count]
-                for pr in prs_cost:
-                    pos_cost_points += pr.total_points
-
-                logging.info(f'Gameweek {target_gameweek} {pos.name} points: {pos_points} vs form points: {pos_naive_points} vs cost points: {pos_cost_points}')
-                gw_points += pos_points
-                gw_naive_points += pos_naive_points
-                gw_cost_points += pos_cost_points
-            season.pos = None
-            logging.info(f'Gameweek {target_gameweek} total points: {gw_points} vs form points: {gw_naive_points} vs cost points: {gw_cost_points}')
-            total_points += gw_points
-            total_naive_points += gw_naive_points
-            total_cost_points += gw_cost_points
-            total_weeks += 1
-
-            # loss = MAELoss()
-            # labels = []
-            # predictions = []
-            # for fixture in Fixtures.get_list(gameweek=target_gameweek):
-            #     for pf in PlayerFixtures.by_fixture(fixture.fixture_id):
-            #         if not pf.minutes or pf.minutes < 10:
-            #             continue
-            #         labels.append(pf.total_points)
-            #         pred = player_points_model.predict(pf)
-            #         predictions.append(pred.prediction.p)
-            # target_gameweek_loss = loss.score(labels, predictions)
-            # logging.info(f'{target_gameweek_loss=} for {target_gameweek=}')
-            # total_player_loss += target_gameweek_loss
-
-            # loss = AvgDiffLoss()
-            # target_gameweek_loss = 0.
-            # labels = []
-            # predictions = []
-            # for fixture in Fixtures.get_list(gameweek=target_gameweek):
-            #     fixture_prediction = cs_model.predict(fixture)
-            #     labels.append(int(fixture.away.score == 0))
-            #     labels.append(int(fixture.home.score == 0))
-            #     predictions.append(fixture_prediction.home_prediction.p)
-            #     predictions.append(fixture_prediction.away_prediction.p)
-            # target_gameweek_loss += loss.score(labels, predictions)
-            # logging.info(f'{target_gameweek_loss=} for {target_gameweek=}')
-            # total_team_loss += target_gameweek_loss
-
-    logging.info(f'Total points: {total_points / total_weeks} ({total_points} / {total_weeks})')
-    logging.info(f'Total form points: {total_naive_points / total_weeks} ({total_naive_points} / {total_weeks})')
-    logging.info(f'Total cost points: {total_cost_points / total_weeks} ({total_cost_points} / {total_weeks})')
-    logging.info(f'{total_player_loss=}')
-    logging.info(f'{total_team_loss=}')
+    
+    season = Season()
+    for gw in range(1, min_history_gws + 1):
+        season.play(Query.fixtures_by_gameweek(gw))
+    
+    for target_gameweek in range(min_history_gws + 1, next_gameweek):
+        gw_predictions = pipeline.predict(
+            next_gameweek=target_gameweek,
+            target_gameweek=target_gameweek,
+            min_history_gws=min_history_gws
+        )
+        
+        pts_model = SimplePtsModel(season)
+        form_model = PlayerPointsFormModel(season, pts_model, min_history_gws)
+        
+        form_predictions = []
+        by_cost = []
+        for fixture in Query.fixtures_by_gameweek(target_gameweek):
+            for pf in Query.player_fixtures_by_fixture(fixture.fixture_id):
+                form_predictions.append((pf, form_model.predict(pf)))
+                if (season.player_stats[pf.player_id].last(min_history_gws, 'mp').p > 60 and
+                        season.player_stats[pf.player_id].last(1, 'mp').p > 30):
+                    by_cost.append(pf)
+        
+        gw_points = 0
+        gw_naive_points = 0
+        gw_cost_points = 0
+        
+        for pos, count in (
+            (PlayerType.GKP, 2),
+            (PlayerType.DEF, 5),
+            (PlayerType.MID, 5),
+            (PlayerType.FWD, 3),
+        ):
+            pos_predictions = [
+                p for p in gw_predictions.players_total_points_desc
+                if p.player.player_type == pos
+            ][:count]
+            pos_points = sum(p.actual_points for p in pos_predictions)
+            
+            pos_form = sorted(
+                [(pf, p) for pf, p in form_predictions if Query.player(pf.player_id).player_type == pos],
+                key=lambda e: -e[1].p,
+            )[:count]
+            pos_naive_points = sum(pf.total_points for pf, p in pos_form)
+            
+            pos_cost = sorted(
+                [pf for pf in by_cost if Query.player(pf.player_id).player_type == pos],
+                key=lambda pf: -pf.value)[:count]
+            pos_cost_points = sum(pf.total_points for pf in pos_cost)
+            
+            logging.info(f'GW{target_gameweek} {pos.name}: {pos_points:.0f} (model) vs '
+                        f'{pos_naive_points:.0f} (form) vs {pos_cost_points:.0f} (cost)')
+            
+            gw_points += pos_points
+            gw_naive_points += pos_naive_points
+            gw_cost_points += pos_cost_points
+        
+        logging.info(f'GW{target_gameweek} TOTAL: {gw_points:.0f} (model) vs '
+                    f'{gw_naive_points:.0f} (form) vs {gw_cost_points:.0f} (cost)')
+        
+        total_points += gw_points
+        total_naive_points += gw_naive_points
+        total_cost_points += gw_cost_points
+        total_weeks += 1
+        
+        season.play(Query.fixtures_by_gameweek(target_gameweek))
+    
+    logging.info(f'\n=== Backtesting Summary ({total_weeks} gameweeks) ===')
+    logging.info(f'Model avg: {total_points / total_weeks:.1f} pts/gw ({total_points:.0f} total)')
+    logging.info(f'Form avg:  {total_naive_points / total_weeks:.1f} pts/gw ({total_naive_points:.0f} total)')
+    logging.info(f'Cost avg:  {total_cost_points / total_weeks:.1f} pts/gw ({total_cost_points:.0f} total)')
+    logging.info(f'\nFinal cache size: {pipeline.cache_info}')
 
 
 if __name__ == '__main__':

@@ -22,7 +22,6 @@ Facade:
   - Player lookups: player(id), players_by_team(id), player_by_name(name)
   - PlayerFixture lookups: All supported index combinations
 """
-from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 
@@ -56,6 +55,19 @@ class TeamFixture:
     @property
     def fixture(self) -> 'Fixture':
         return Fixtures.get_one(fixture_id=self.fixture_id)
+
+    @property
+    def team(self) -> Team:
+        return Teams.get_one(team_id=self.team_id)
+
+    @property
+    def opponent_team(self) -> Team:
+        opponent_team_id = (
+            self.fixture.home.team_id
+            if self.fixture.away.team_id == self.team_id
+            else self.fixture.away.team_id
+        )
+        return Teams.get_one(team_id=opponent_team_id)
 
     @property
     def player_fixtures(self) -> list['PlayerFixture']:
@@ -245,15 +257,15 @@ Fixtures = Collection[Fixture](
 
 PlayerFixtures = Collection[PlayerFixture](
     simple_indices=[
-        SimpleIndex('fixture_id', 'player_id'),  # Unique: one player per fixture
+        SimpleIndex('fixture_id', 'player_id'),
     ],
     list_indices=[
-        ListIndex('fixture_id', 'team_id'),      # by_fixture_and_team
-        ListIndex('player_id'),                  # by_player
-        ListIndex('fixture_id'),                 # by_fixture
-        ListIndex('team_id'),                    # by_team (uses computed property!)
-        ListIndex('gameweek'),                   # by_gw
-        ListIndex('team_id', 'gameweek'),        # by_team_and_gw
+        ListIndex('fixture_id', 'team_id'),
+        ListIndex('player_id'),
+        ListIndex('fixture_id'),
+        ListIndex('team_id'),
+        ListIndex('gameweek'),
+        ListIndex('team_id', 'gameweek'),
     ],
 )
 

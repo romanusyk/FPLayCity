@@ -29,23 +29,15 @@ Player-level models (predict individual player performances):
 """
 from src.fpl.aggregate import Aggregate, swa, wa
 from src.fpl.models.immutable import Fixture, PlayerFixture, Query
-from src.fpl.models.prediction import (
-    FixturePrediction,
-    PlayerFixtureAggregate,
-    PlayerFixturePrediction,
-    PlayerFixtureXgPrediction,
-    PlayerFixtureXaPrediction,
-)
 from src.fpl.models.season import Season
 
 
 class FixtureModel:
 
-    def predict(self, fixture: Fixture) -> FixturePrediction:
-        return FixturePrediction(
-            fixture=fixture,
-            home_prediction=self.predict_for_team(fixture.home.team_id, fixture),
-            away_prediction=self.predict_for_team(fixture.away.team_id, fixture),
+    def predict(self, fixture: Fixture) -> tuple[Aggregate, Aggregate]:
+        return (
+            self.predict_for_team(fixture.home.team_id, fixture),
+            self.predict_for_team(fixture.away.team_id, fixture),
         )
 
     def scale_for_team(self, team_id: int, fixture: Fixture) -> float:
@@ -230,11 +222,8 @@ class PlayerFixtureModel:
         self.season = season
         self.last_n_weeks = last_n_weeks
 
-    def predict(self, fixture: PlayerFixture) -> PlayerFixtureAggregate:
-        return PlayerFixtureAggregate(
-            fixture=fixture,
-            prediction=self._predict(fixture),
-        )
+    def predict(self, fixture: PlayerFixture) -> Aggregate:
+        return self._predict(fixture)
 
     def _predict(self, fixture: PlayerFixture) -> Aggregate:
         pass
@@ -290,8 +279,6 @@ class PlayerXASimpleModel(PlayerFixtureModel):
 
 
 class PlayerXAUltimateModel(PlayerFixtureModel):
-
-    prediction_cls = PlayerFixtureXaPrediction
 
     def __init__(self, season: Season, team_xa_model: XAModel):
         super().__init__(season)

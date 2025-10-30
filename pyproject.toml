@@ -15,3 +15,14 @@ dev = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.24.0",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+ignore = [
+    "E501",  # Line too long
+    "W293",  # Blank line contains whitespace
+    "W291",  # Trailing whitespace
+]

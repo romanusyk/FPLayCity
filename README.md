@@ -380,6 +380,316 @@ class Query:
 - ✅ Composable = flexible experimentation
 - ✅ Pure functions = easy to test and reason about
 
+## North Star: Unified Model-View Architecture
+
+### Vision
+
+Build a unified architecture where **data models**, **API schemas**, **UI representations**, and **debugger views** all derive from a single source of truth: **Pydantic models + view layer**.
+
+### Architecture Layers
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. CORE MODELS (Pydantic BaseModel)                         │
+├─────────────────────────────────────────────────────────────┤
+│ • Immutable data structures (frozen=True)                   │
+│ • Runtime validation                                         │
+│ • Single source of truth                                     │
+│                                                              │
+│ Example:                                                     │
+│   class Player(BaseModel):                                   │
+│       model_config = ConfigDict(frozen=True)                 │
+│       player_id: int                                         │
+│       web_name: str                                          │
+│       team_id: int                                           │
+│       now_cost: float                                        │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 2. VIEW MODELS (Pydantic BaseModel)                         │
+├─────────────────────────────────────────────────────────────┤
+│ • Context-specific representations                           │
+│ • Computed/enriched fields                                   │
+│ • Multiple views per core model                              │
+│                                                              │
+│ Examples:                                                    │
+│   class PlayerSummaryView(BaseModel):                        │
+│       name: str                                              │
+│       team: str                                              │
+│       cost: str  # "£13.0m" formatted                        │
+│                                                              │
+│   class PlayerDetailView(BaseModel):                         │
+│       player_id: int                                         │
+│       web_name: str                                          │
+│       team_name: str  # Resolved from team_id                │
+│       position: str                                          │
+│       now_cost: float                                        │
+│       stats: PlayerStatsView                                 │
+│                                                              │
+│ Converters:                                                  │
+│   def to_summary(p: Player) -> PlayerSummaryView: ...        │
+│   def to_detail(p: Player) -> PlayerDetailView: ...          │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 3. API LAYER (OpenAPI from Pydantic)                        │
+├─────────────────────────────────────────────────────────────┤
+│ • MCP tools use view models as request/response schemas     │
+│ • Automatic OpenAPI generation                               │
+│ • HTTP API implementation                                    │
+│ • FastMCP proxy via .from_openapi()                          │
+│                                                              │
+│ Flow:                                                        │
+│   1. Define MCP tool with Pydantic views                     │
+│   2. Generate OpenAPI spec from Pydantic schemas             │
+│   3. Implement HTTP API handlers (views → JSON)              │
+│   4. FastMCP proxies HTTP API                                │
+│                                                              │
+│ Example:                                                     │
+│   @app.get("/player/{player_id}")                            │
+│   def get_player(player_id: int) -> PlayerDetailView:        │
+│       return to_detail(Query.player(player_id))              │
+│                                                              │
+│   # FastMCP auto-generates from OpenAPI:                     │
+│   mcp = FastMCP.from_openapi(                                │
+│       spec="http://localhost:8000/openapi.json",             │
+│       base_url="http://localhost:8000"                       │
+│   )                                                          │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 4. PRESENTATION LAYER (Views → UI)                          │
+├─────────────────────────────────────────────────────────────┤
+│ • Debugger __repr__ delegates to views                       │
+│ • Console output formatted from views                        │
+│ • Future: Web UI renders views directly                      │
+│                                                              │
+│ Example:                                                     │
+│   class Player(BaseModel):                                   │
+│       # ... fields ...                                       │
+│                                                              │
+│       def __repr__(self) -> str:                             │
+│           view = to_summary(self)                            │
+│           return f"{view.name} ({view.team}, {view.cost})"   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Migration Plan
+
+#### Phase 1: Core Models → Pydantic
+```python
+# Before (stdlib dataclass)
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Player:
+    player_id: int
+    web_name: str
+    team_id: int
+
+# After (Pydantic BaseModel)
+from pydantic import BaseModel, ConfigDict
+
+class Player(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    
+    player_id: int
+    web_name: str
+    team_id: int
+    
+    # Computed fields stay as @property or migrate to @computed_field
+    @property
+    def team(self) -> Team:
+        return Query.team(self.team_id)
+```
+
+**Impact**: 
+- Change instantiation from positional to keyword args
+- Add runtime validation
+- Enable JSON Schema generation
+
+#### Phase 2: View Layer
+```python
+# Define view models for different contexts
+class PlayerSummaryView(BaseModel):
+    """Quick view for logs/debugger"""
+    name: str
+    team: str
+    cost: str
+
+class PlayerMcpView(BaseModel):
+    """Complete view for MCP tools"""
+    player_id: int
+    web_name: str
+    team_id: int
+    team_name: str
+    position: str
+    now_cost: float
+    
+class PlayerPredictionView(BaseModel):
+    """View for prediction results"""
+    player_id: int
+    web_name: str
+    team_name: str
+    predicted_points: float
+    cs_points: float
+    xg_points: float
+    xa_points: float
+
+# Converter functions
+def to_summary(p: Player) -> PlayerSummaryView:
+    return PlayerSummaryView(
+        name=p.web_name,
+        team=Query.team(p.team_id).name,
+        cost=f"£{p.now_cost}m"
+    )
+
+def to_mcp_view(p: Player) -> PlayerMcpView:
+    return PlayerMcpView(
+        player_id=p.player_id,
+        web_name=p.web_name,
+        team_id=p.team_id,
+        team_name=Query.team(p.team_id).name,
+        position=p.player_type.name,
+        now_cost=p.now_cost
+    )
+
+def to_prediction_view(p: Player, pred: PlayerTotalPrediction) -> PlayerPredictionView:
+    return PlayerPredictionView(
+        player_id=p.player_id,
+        web_name=p.web_name,
+        team_name=Query.team(p.team_id).name,
+        predicted_points=pred.total_points,
+        cs_points=pred.cs_points,
+        xg_points=pred.xg_points,
+        xa_points=pred.xa_points
+    )
+```
+
+#### Phase 3: HTTP API + MCP Integration
+```python
+# api.py - HTTP API with FastAPI
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI()
+
+class GetPlayerRequest(BaseModel):
+    player_id: int
+
+@app.post("/player")
+def get_player(req: GetPlayerRequest) -> PlayerMcpView:
+    """Get player details"""
+    player = Query.player(req.player_id)
+    return to_mcp_view(player)
+
+@app.post("/predict")
+def predict_player(req: GetPlayerRequest) -> PlayerPredictionView:
+    """Get player predictions"""
+    player = Query.player(req.player_id)
+    # ... run prediction ...
+    return to_prediction_view(player, prediction)
+
+# Generate OpenAPI spec
+if __name__ == "__main__":
+    import json
+    openapi_spec = app.openapi()
+    with open("openapi.json", "w") as f:
+        json.dump(openapi_spec, f)
+```
+
+```python
+# mcp_server.py - MCP server via HTTP proxy
+from mcp.server.fastmcp import FastMCP
+
+# Option 1: Direct definition with view models
+mcp = FastMCP("FPL Predictions")
+
+@mcp.tool()
+def get_player(player_id: int) -> PlayerMcpView:
+    """Get detailed player information"""
+    player = Query.player(player_id)
+    return to_mcp_view(player)
+
+# Option 2: Auto-generate from HTTP API
+mcp = FastMCP.from_openapi(
+    spec="http://localhost:8000/openapi.json",
+    base_url="http://localhost:8000"
+)
+# All tools auto-generated with proper schemas!
+```
+
+#### Phase 4: Unified Representations
+```python
+# Core model uses views for __repr__
+class Player(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    
+    player_id: int
+    web_name: str
+    team_id: int
+    now_cost: float
+    
+    def __repr__(self) -> str:
+        """PyCharm debugger shows clean representation"""
+        view = to_summary(self)
+        return f"{view.name} ({view.team}, {view.cost})"
+    
+    def to_dict(self, view: str = "summary") -> dict:
+        """Flexible serialization for any context"""
+        if view == "summary":
+            return to_summary(self).model_dump()
+        elif view == "mcp":
+            return to_mcp_view(self).model_dump()
+        elif view == "full":
+            return self.model_dump()
+        raise ValueError(f"Unknown view: {view}")
+```
+
+### Benefits
+
+1. **Single Source of Truth**
+   - Core models define data structure
+   - Views define presentations
+   - No duplication or drift
+
+2. **Type Safety Everywhere**
+   - Pydantic validates at runtime
+   - Type hints checked by IDE
+   - API contracts enforced
+
+3. **Automatic API Generation**
+   - Pydantic → JSON Schema → OpenAPI
+   - FastMCP generates tools from OpenAPI
+   - HTTP API and MCP stay in sync
+
+4. **Flexible Representations**
+   - Multiple views per model
+   - Context-appropriate formatting
+   - Debugger, logs, APIs all use same view layer
+
+5. **Maintainability**
+   - Change model → views update
+   - Add field → API schema updates
+   - Refactor converter → all consumers benefit
+
+### Implementation Strategy
+
+**Start Small, Iterate:**
+
+1. ✅ **Completed**: Query facade for data access
+2. 🔄 **Next**: Migrate 1-2 core models to Pydantic BaseModel
+3. 🔄 **Then**: Create 2-3 view models for different contexts
+4. 🔄 **Then**: Build HTTP API for subset of features
+5. 🔄 **Finally**: Generate MCP server from OpenAPI
+
+**Success Criteria:**
+- Core models are Pydantic BaseModel
+- 3+ view types per core model (summary, detail, MCP)
+- HTTP API serves predictions with Pydantic views
+- MCP server auto-generated from OpenAPI spec
+- `__repr__` uses view layer for clean debugger output
+
 ## Usage
 
 Load data from FPL API:
