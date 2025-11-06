@@ -47,9 +47,9 @@ async def main(client: AsyncClient):
     logging.info("Loading FPL data...")
     await bootstrap(client)
     
-    next_gameweek = 10
+    next_gameweek = 11
     min_history_gws = 5
-    horizon = 2
+    horizon = 3
     
     logging.info("Creating lazy computation pipeline...")
     pipeline = PredictionPipeline()

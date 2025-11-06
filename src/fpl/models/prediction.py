@@ -13,11 +13,13 @@ Classes:
 - GameweekPrediction: All predictions for a single gameweek
 - GameweekPredictions: Aggregates and sorts predictions across multiple gameweeks
 """
+import dataclasses
 from functools import reduce
 import operator
 
 from src.fpl.aggregate import Aggregate
 from src.fpl.models.immutable import TeamFixture, PlayerFixture, Player, Team, Query, PlayerType
+from src.fpl.models.season import Season
 
 
 class TeamFixturePrediction:
@@ -65,6 +67,80 @@ class PlayerFixturePrediction:
         )
 
 
+@dataclasses.dataclass
+class PlayerRegFlag:
+
+    importance: float = 0.
+    description: str = 'Reg flag'
+
+    @classmethod
+    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
+        raise NotImplementedError
+
+    def __repr__(self):
+        return f'{self.description} ({self.importance:.1f})'
+
+
+@dataclasses.dataclass
+class MissedLastGame(PlayerRegFlag):
+
+    importance: float = 1.0
+    description: str = '0 MP'
+
+    @classmethod
+    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
+        fixtures = season.player_stats[player_id].last_n_fixtures(1)
+        return cls() if len(fixtures) > 0 and fixtures[-1].minutes == 0 else None
+
+    def __repr__(self):
+        return f'{self.description}'
+
+
+@dataclasses.dataclass
+class ShortLastGame(PlayerRegFlag):
+    importance: float = 0.7
+    description: str = '<60 MP'
+
+    @classmethod
+    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
+        fixtures = season.player_stats[player_id].last_n_fixtures(1)
+        return cls() if len(fixtures) > 0 and fixtures[-1].minutes < 60 else None
+
+    def __repr__(self):
+        return f'{self.description}'
+
+
+@dataclasses.dataclass
+class Unavailable(PlayerRegFlag):
+    importance: float = 1.0
+    description: str = 'I'
+
+    @classmethod
+    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
+        chance = Query.player(player_id).chance_of_playing_next_round
+        if chance is None or chance == 100:
+            return None
+        importance = (100 - chance) / 100.0
+        return cls(importance=importance)
+
+    def __repr__(self):
+        return f'{self.description} {int(self.importance * 100):d}%'
+
+
+@dataclasses.dataclass
+class NotStartedLastGame(PlayerRegFlag):
+    importance: float = 0.7
+    description: str = 'B'
+
+    @classmethod
+    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
+        fixtures = season.player_stats[player_id].last_n_fixtures(1)
+        return cls() if len(fixtures) > 0 and fixtures[-1].starts == 0 else None
+
+    def __repr__(self):
+        return f'{self.description}'
+
+
 class TeamTotalPrediction:
 
     fixture_predictions: list[TeamFixturePrediction]
@@ -92,11 +168,18 @@ class TeamTotalPrediction:
 class PlayerTotalPrediction:
 
     fixture_predictions: list[PlayerFixturePrediction]
+    all_red_flags: list[list[type[PlayerRegFlag]]] = [
+        [Unavailable],
+        [NotStartedLastGame],
+        [MissedLastGame, ShortLastGame],
+    ]
 
     def __init__(
             self,
+            season: Season,
             fixture_predictions: list[PlayerFixturePrediction],
     ):
+        self.season = season
         self.fixture_predictions = fixture_predictions
 
     @property
@@ -160,8 +243,22 @@ class PlayerTotalPrediction:
     def actual_points_per_value(self) -> float | None:
         return self.actual_points / self.player.now_cost if self.actual_points else None
 
+    @property
+    def red_flags(self) -> list[PlayerRegFlag]:
+        result = []
+        for flags in self.all_red_flags:
+            for flag_cls in flags:
+                if flag := flag_cls.check(
+                    self.season,
+                    self.fixture_predictions[0].fixture.player_id,
+                ):
+                    result.append(flag)
+                    break
+        return result
+
     def __repr__(self):
         return (
+            f'{self.red_flags}'
             f'{self.player}: {self.total_predicted_points:.1f} | '
             f'{self.actual_points} '
             f'({self.total_predicted_points_per_value:.1f}/£) = '
@@ -202,7 +299,8 @@ class GameweekPredictions:
     gameweek_predictions: list[GameweekPrediction]
     pos: PlayerType | None
 
-    def __init__(self, gameweek_predictions: list[GameweekPrediction]):
+    def __init__(self, season: Season, gameweek_predictions: list[GameweekPrediction]):
+        self.season = season
         self.gameweek_predictions = gameweek_predictions
         self.pos = None
 
@@ -250,6 +348,7 @@ class GameweekPredictions:
             if self.pos is not None and Query.player(player_id).player_type != self.pos:
                 continue
             total_predictions.append(PlayerTotalPrediction(
+                self.season,
                 [gp.player_fixture_predictions[player_id] for gp in self.gameweek_predictions],
             ))
         return total_predictions

@@ -141,6 +141,7 @@ class PlayerFixture:
     expected_goal_involvements: float | None = None
     expected_goals_conceded: float | None = None
     value: int | None = None
+    starts: int | None = None
 
     @property
     def side(self) -> str:
@@ -209,6 +210,10 @@ class Player:
     player_type: PlayerType
     team_id: int
     now_cost: float
+    status: str
+    chance_of_playing_next_round: int
+    chance_of_playing_this_round: int
+    news: str
 
     @property
     def team(self) -> Team:

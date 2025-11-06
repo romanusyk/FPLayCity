@@ -127,8 +127,9 @@ class GameweekPredictionsNode(LazyNode[GameweekPredictions]):
         GameweekPredictions aggregating all target gameweeks
     """
     
-    def __init__(self, gameweek_prediction: GameweekPredictionNode):
+    def __init__(self, season: SeasonNode, gameweek_prediction: GameweekPredictionNode):
         super().__init__()
+        self.season = season
         self.gameweek_prediction = gameweek_prediction
     
     def compute(
@@ -147,7 +148,7 @@ class GameweekPredictionsNode(LazyNode[GameweekPredictions]):
             )
             gw_predictions.append(gw_pred)
         
-        return GameweekPredictions(gw_predictions)
+        return GameweekPredictions(self.season(next_gameweek=next_gameweek), gw_predictions)
 
 
 class PredictionPipeline:
@@ -180,7 +181,7 @@ class PredictionPipeline:
     def __init__(self):
         self.season = SeasonNode()
         self.gameweek_prediction = GameweekPredictionNode(self.season)
-        self.gameweek_predictions = GameweekPredictionsNode(self.gameweek_prediction)
+        self.gameweek_predictions = GameweekPredictionsNode(self.season, self.gameweek_prediction)
     
     def predict(
         self,

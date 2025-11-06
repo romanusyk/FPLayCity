@@ -244,6 +244,10 @@ async def bootstrap(client: AsyncClient):
                 player_type=PlayerType(player['element_type']),
                 team_id=player['team'],
                 now_cost=player['now_cost'] / 10.,
+                status=player['status'],
+                chance_of_playing_next_round=player['chance_of_playing_next_round'],
+                chance_of_playing_this_round=player['chance_of_playing_this_round'],
+                news=player['news'],
             )
         )
 
@@ -266,6 +270,7 @@ async def bootstrap(client: AsyncClient):
                     expected_goal_involvements=float(fixture['expected_goal_involvements']),
                     expected_goals_conceded=float(fixture['expected_goals_conceded']),
                     value=fixture['value'],
+                    starts=fixture['starts'],
                 )
             )
         for fixture in row['fixtures']:
