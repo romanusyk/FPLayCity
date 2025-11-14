@@ -17,6 +17,7 @@ import os
 from datetime import datetime, timedelta
 
 from httpx import AsyncClient
+from src.fpl.loader.utils import ensure_dir_exists
 from src.fpl.models.immutable import (
     Teams, Team, TeamFixture, Fixture, Fixtures, Players, Player,
     PlayerType, PlayerFixtures, PlayerFixture,
@@ -37,13 +38,6 @@ RESOURCES = {
         'dir_path': 'data/2024-2025/elements',
     },
 }
-
-
-def ensure_dir_exists(filepath: str) -> None:
-    """Make sure the directory for the given filepath exists."""
-    directory = os.path.dirname(filepath)
-    if directory and not os.path.exists(directory):
-        os.makedirs(directory, exist_ok=True)
 
 
 class Season:

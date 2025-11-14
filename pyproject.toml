@@ -8,6 +8,7 @@ dependencies = [
     "httpx>=0.28.1",
     "mcp-server>=0.1.4",
     "mcp[cli,server]>=1.8.0",
+    "playwright>=1.40.0",
 ]
 
 [dependency-groups]

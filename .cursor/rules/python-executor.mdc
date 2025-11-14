@@ -1,8 +1,7 @@
 ---
-globs: *.py
 description: Python execution and testing guidelines for this project
+alwaysApply: false
 ---
-
 # Python Execution with uv
 
 This project uses `uv` as the Python package manager and script runner.

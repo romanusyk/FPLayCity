@@ -1,0 +1,4 @@
+---
+alwaysApply: true
+---
+In this project we prioritize **data completeness over code robustness**. Scripts should not try to defensively ignore or patch over bad or missing data; instead, they must fail loudly whenever we suspect that any player, match, team, or other data point could be missing or incorrectly parsed. We do **not** swallow parsing errors or skip records silently (e.g. \"best-effort\" loops that `continue` on exceptions) because that risks producing incomplete datasets. All code in this repo is intended for manual, supervised execution (not cron or unattended production), so surfacing errors directly to the user is preferred over graceful degradation.

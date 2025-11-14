@@ -228,6 +228,16 @@ class PlayerStats:
         self.xa_stats.add_player_fixture(pf)
         self.dc_stats.add_player_fixture(pf)
 
+    def last_n_fixtures(self, n: int) -> list[PlayerFixture]:
+        assert n > 0
+        result = []
+        for i in range(38, 0, -1):
+            for pf in self.fixtures[i][::-1]:
+                result.append(pf)
+                if len(result) == n:
+                    return result[::-1]
+        return result[::-1]
+
     @property
     def mp_last_5(self) -> Aggregate:
         return self.last(5, 'mp')

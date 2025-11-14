@@ -22,6 +22,7 @@ from asyncio import new_event_loop
 from httpx import AsyncClient
 
 from src.fpl.loader.load import bootstrap
+from src.fpl.loader.fotmob import load_saved_match_details
 from src.fpl.compute.prediction import PredictionPipeline
 from src.fpl.models.immutable import PlayerType, Query
 from src.fpl.models.season import Season
@@ -46,6 +47,15 @@ class XG_BY_FDR:
 async def main(client: AsyncClient):
     logging.info("Loading FPL data...")
     await bootstrap(client)
+    
+    # Read saved FotMob lineups/match details from disk (no fetching here)
+    season_dir = "2025-2026"
+    match_details = load_saved_match_details(season=season_dir)
+    total_matches = sum(len(v) for v in match_details.values())
+    logging.info(f"Loaded {total_matches} match lineups across {len(match_details)} teams from data/{season_dir}/lineups")
+    for team_name, matches in list(match_details.items())[:5]:
+        sample_ids = [m.match_id for m in matches[:3]]
+        logging.info(f"- {team_name}: {len(matches)} matches (first 3 ids: {sample_ids})")
     
     next_gameweek = 11
     min_history_gws = 5
