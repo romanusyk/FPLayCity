@@ -77,8 +77,7 @@ class MatchDetails(BaseModel):
     subs_log: list[Substitution]
 
 
-def _normalize_team_key(name: str) -> str:
-    return "".join(ch for ch in name.lower() if ch.isalnum())
+_TEAM_NAME_TO_ID: dict[str, int] = {name: tid for tid, name in TEAMS.items()}
 
 
 class TeamFetchError(RuntimeError):
@@ -148,23 +147,25 @@ def _collect_substitutions(match_json: dict, team_is_home: bool) -> list[Substit
     return subs
 
 
-def _build_match_details(match_json: dict, team_name: str) -> MatchDetails:
+def _build_match_details(match_json: dict, team_id: int) -> MatchDetails:
     lineup = ((match_json.get("content") or {}).get("lineup") or {})
     home_section = lineup.get("homeTeam")
     away_section = lineup.get("awayTeam")
     if not home_section or not away_section:
         raise ValueError("Match JSON missing lineup information")
 
-    norm_target = _normalize_team_key(team_name)
-    home_norm = _normalize_team_key(home_section.get("name", ""))
-    away_norm = _normalize_team_key(away_section.get("name", ""))
+    home_id = _as_int(home_section.get("id"))
+    away_id = _as_int(away_section.get("id"))
 
-    if norm_target == home_norm:
+    if team_id == home_id:
         team_section, opponent_section, team_is_home = home_section, away_section, True
-    elif norm_target == away_norm:
+    elif team_id == away_id:
         team_section, opponent_section, team_is_home = away_section, home_section, False
     else:
-        raise ValueError(f"Team '{team_name}' not found in match lineup ({home_section.get('name')} vs {away_section.get('name')})")
+        raise ValueError(
+            f"Team id {team_id} not found in match lineup "
+            f"({home_section.get('id')} vs {away_section.get('id')})"
+        )
 
     general = match_json.get("general") or {}
     header_status = (match_json.get("header") or {}).get("status") or {}
@@ -183,9 +184,9 @@ def _build_match_details(match_json: dict, team_name: str) -> MatchDetails:
         name=opponent_section.get("name", "Unknown"),
     )
 
-    starters = _collect_players(team_section.get("starters", []), f"{team_name} starters")
-    benched = _collect_players(team_section.get("subs", []), f"{team_name} bench")
-    unavailable = _collect_players(team_section.get("unavailable", []), f"{team_name} unavailable")
+    starters = _collect_players(team_section.get("starters", []), "starters")
+    benched = _collect_players(team_section.get("subs", []), "bench")
+    unavailable = _collect_players(team_section.get("unavailable", []), "unavailable")
     subs_log = _collect_substitutions(match_json, team_is_home)
 
     return MatchDetails(
@@ -479,6 +480,9 @@ def load_saved_match_details(
 
     selected_teams = team_filter if team_filter is not None else [d.name for d in base_dir.iterdir() if d.is_dir()]
     for team_name in selected_teams:
+        if team_name not in _TEAM_NAME_TO_ID:
+            raise ValueError(f"Unknown team directory '{team_name}' – no matching FotMob team id in TEAMS")
+        team_id = _TEAM_NAME_TO_ID[team_name]
         team_path = base_dir / team_name
         if not team_path.is_dir():
             continue
@@ -488,8 +492,15 @@ def load_saved_match_details(
         match_list: list[MatchDetails] = []
         for match_file in match_files:
             match_json = json.loads(match_file.read_text())
-            details = _build_match_details(match_json, team_name)
-            match_list.append(details)
+            try:
+                details = _build_match_details(match_json, team_id)
+            except ValueError:
+                if match_json['general']['leagueName'] not in ['Club Friendlies']:
+                    raise
+                else:
+                    logging.warning(f'Skipping a match missing essential data: {match_json["general"]}')
+            else:
+                match_list.append(details)
         match_list.sort(key=lambda d: d.event_time)
         result[team_name] = match_list
     return result
