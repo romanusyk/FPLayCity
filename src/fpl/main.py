@@ -22,8 +22,10 @@ from asyncio import new_event_loop
 from httpx import AsyncClient
 
 from src.fpl.loader.load import bootstrap
-from src.fpl.loader.fotmob import load_saved_match_details
+from src.fotmob.load import load_saved_match_details
 from src.fpl.compute.prediction import PredictionPipeline
+from src.fotmob.rotation.fotmob_adapter import FotmobAdapter, build_gameweek_mapper
+from src.fotmob.rotation.rotation_config import RotationConfig
 from src.fpl.models.immutable import PlayerType, Query
 from src.fpl.models.season import Season
 from src.fpl.forecast.models import SimplePtsModel, PlayerPointsFormModel
@@ -57,12 +59,16 @@ async def main(client: AsyncClient):
         sample_ids = [m.match_id for m in matches[:3]]
         logging.info(f"- {team_name}: {len(matches)} matches (first 3 ids: {sample_ids})")
     
-    next_gameweek = 11
-    min_history_gws = 5
-    horizon = 3
+    rotation_config = RotationConfig()
+    gw_mapper = build_gameweek_mapper(Query.all_gameweeks())
+    fotmob_adapter = FotmobAdapter(match_details, rotation_config, gw_mapper)
+
+    next_gameweek = 12
+    min_history_gws = 6
+    horizon = 4
     
     logging.info("Creating lazy computation pipeline...")
-    pipeline = PredictionPipeline()
+    pipeline = PredictionPipeline(rotation_adapter=fotmob_adapter)
     
     logging.info(f"\n=== Predictions for GWs {next_gameweek} to {next_gameweek + horizon - 1} ===")
     predictions = pipeline.predict(
@@ -76,6 +82,17 @@ async def main(client: AsyncClient):
     logging.info(f"\nTop 10 players by predicted points:")
     for i, player in enumerate(predictions.players_total_points_desc[:10], 1):
         logging.info(f"{i}. {player}")
+        rivals = player.rotation_rivals
+        if rivals and rivals.rivals_sorted:
+            rival_lines = []
+            for detail in rivals.rivals_sorted[:3]:
+                try:
+                    fpl_rival_id = fotmob_adapter.get_fpl_player_id_from_fotmob(detail.fotmob_player_id)
+                    rival_name = Query.player(fpl_rival_id).web_name
+                except KeyError:
+                    rival_name = f"fotmob:{detail.fotmob_player_id}"
+                rival_lines.append(f"{rival_name} ({detail.sub_count} subs)")
+            logging.info(f"    Rivals: {', '.join(rival_lines)}")
     
     logging.info(f"\nTop 5 teams by predicted clean sheets:")
     for i, team_prediction in enumerate(predictions.teams_total_cs_desc[:5], 1):

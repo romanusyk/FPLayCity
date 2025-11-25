@@ -20,7 +20,7 @@ from httpx import AsyncClient
 from src.fpl.loader.utils import ensure_dir_exists
 from src.fpl.models.immutable import (
     Teams, Team, TeamFixture, Fixture, Fixtures, Players, Player,
-    PlayerType, PlayerFixtures, PlayerFixture,
+    PlayerType, PlayerFixtures, PlayerFixture, Gameweek, Gameweeks,
 )
 
 BASE_URL = "https://fantasy.premierleague.com/api/"
@@ -194,6 +194,18 @@ async def bootstrap(client: AsyncClient):
     )
     player_response_bodies = await elements_resource.get_latest_state(freshness, client)
 
+    for event in main_response_body['events']:
+        deadline_time = event.get('deadline_time')
+        if deadline_time is None:
+            raise ValueError(f"Missing deadline_time for gameweek {event.get('id')}")
+        deadline_dt = datetime.fromisoformat(deadline_time.replace('Z', '+00:00'))
+        Gameweeks.add(
+            Gameweek(
+                gameweek=event['id'],
+                deadline_time=deadline_dt,
+            )
+        )
+
     for row in main_response_body['teams']:
         Teams.add(
             Team(
@@ -234,6 +246,8 @@ async def bootstrap(client: AsyncClient):
         Players.add(
             Player(
                 player_id=player['id'],
+                first_name=player['first_name'],
+                second_name=player['second_name'],
                 web_name=player['web_name'],
                 player_type=PlayerType(player['element_type']),
                 team_id=player['team'],

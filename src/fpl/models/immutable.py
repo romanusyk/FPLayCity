@@ -24,6 +24,7 @@ Facade:
 """
 from dataclasses import dataclass
 from enum import Enum
+from datetime import datetime
 
 from src.fpl.collection import Collection, SimpleIndex, ListIndex
 
@@ -206,6 +207,8 @@ class PlayerType(Enum):
 class Player:
 
     player_id: int
+    first_name: str
+    second_name: str
     web_name: str
     player_type: PlayerType
     team_id: int
@@ -218,6 +221,10 @@ class Player:
     @property
     def team(self) -> Team:
         return Teams.get_one(team_id=self.team_id)
+
+    @property
+    def full_name(self) -> str:
+        return f'{self.first_name} {self.second_name}'.strip()
 
     @property
     def clean_sheet_points(self) -> int:
@@ -249,7 +256,18 @@ class Player:
         }.get(self.player_type, 0.)
 
     def __repr__(self):
-        return f'{self.web_name} ({self.player_type.name}) - {self.team.name}'
+        full_name = f'{self.first_name} {self.second_name}'.strip()
+        return f'{full_name or self.web_name} ({self.player_type.name}) - {self.team.name}'
+
+
+@dataclass
+class Gameweek:
+
+    gameweek: int
+    deadline_time: datetime
+
+    def __repr__(self):
+        return f'GW{self.gameweek} ({self.deadline_time.isoformat()})'
 
 
 Teams = Collection[Team]([SimpleIndex('team_id')])
@@ -278,6 +296,11 @@ PlayerFixtures = Collection[PlayerFixture](
 Players = Collection[Player](
     simple_indices=[SimpleIndex('player_id')],
     list_indices=[ListIndex('team_id')],
+)
+
+
+Gameweeks = Collection[Gameweek](
+    simple_indices=[SimpleIndex('gameweek')],
 )
 
 
@@ -410,3 +433,15 @@ class Query:
             p for p in Players.items
             if name.lower() in p.web_name.lower()
         ]
+
+    # --- Gameweeks ---
+
+    @staticmethod
+    def gameweek(gameweek: int) -> Gameweek:
+        """Get gameweek by ID."""
+        return Gameweeks.get_one(gameweek=gameweek)
+
+    @staticmethod
+    def all_gameweeks() -> list[Gameweek]:
+        """Get all gameweeks."""
+        return Gameweeks.items

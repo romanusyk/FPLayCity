@@ -14,7 +14,9 @@ Classes:
   - Used as context for all prediction models
 """
 from src.fpl.aggregate import Aggregate
+from src.fotmob.rotation.fotmob_adapter import FotmobAdapter
 from src.fpl.models.immutable import Fixture, PlayerFixture, Player, PlayerType, Query
+from src.fotmob.rotation.rotation_view import PlayerSquadRole, RivalStartHint
 from src.fpl.models.stats import (
     CleanSheetStatsAggregate,
     XGFixtureStatsAggregate, XAFixtureStatsAggregate, DCFixtureStatsAggregate, PtsFixtureStatsAggregate,
@@ -352,6 +354,7 @@ class Season:
 
         # view options
         self.pos = None
+        self.rotation_adapter: FotmobAdapter | None = None
 
     def play(self, fixtures: list[Fixture]):
         for fixture in fixtures:
@@ -384,6 +387,19 @@ class Season:
                 self.player_stats[pf.player_id].add_player_fixture(pf)
 
         self.gameweek += 1
+
+    def attach_rotation_adapter(self, adapter: FotmobAdapter):
+        self.rotation_adapter = adapter
+
+    def get_player_squad_role(self, fpl_player_id: int) -> PlayerSquadRole:
+        if not self.rotation_adapter:
+            raise ValueError("Rotation adapter is not attached to the season")
+        return self.rotation_adapter.get_player_squad_role(fpl_player_id, self.gameweek)
+
+    def get_rival_start_hint(self, fpl_player_id: int) -> RivalStartHint:
+        if not self.rotation_adapter:
+            raise ValueError("Rotation adapter is not attached to the season")
+        return self.rotation_adapter.get_rival_start_hint(fpl_player_id, self.gameweek)
 
     @property
     def top_xg_players(self) -> list[PlayerStats]:

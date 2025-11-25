@@ -20,6 +20,7 @@ import operator
 from src.fpl.aggregate import Aggregate
 from src.fpl.models.immutable import TeamFixture, PlayerFixture, Player, Team, Query, PlayerType
 from src.fpl.models.season import Season
+from src.fotmob.rotation.rotation_view import PlayerSquadRole, RivalStartHint
 
 
 class TeamFixturePrediction:
@@ -231,6 +232,10 @@ class PlayerTotalPrediction:
         return self.total_predicted_points / self.player.now_cost
 
     @property
+    def million_per_total_predicted_points(self) -> float:
+        return self.player.now_cost / self.total_predicted_points if self.total_predicted_points else 999.
+
+    @property
     def actual_points(self) -> int | None:
         result = None
         for fp in self.fixture_predictions:
@@ -256,16 +261,33 @@ class PlayerTotalPrediction:
                     break
         return result
 
+    @property
+    def squad_role(self) -> PlayerSquadRole | None:
+        if not self.season.rotation_adapter:
+            return None
+        return self.season.get_player_squad_role(self.player.player_id)
+
+    @property
+    def rotation_rivals(self) -> RivalStartHint | None:
+        if not self.season.rotation_adapter:
+            return None
+        return self.season.get_rival_start_hint(self.player.player_id)
+
     def __repr__(self):
+        role_suffix = ''
+        squad_role = self.squad_role
+        if squad_role and squad_role.total_matches:
+            role_suffix = f" [{'FT' if squad_role.is_first_team else 'ST'} {squad_role.starts}/{squad_role.total_matches}]"
         return (
             f'{self.red_flags}'
             f'{self.player}: {self.total_predicted_points:.1f} | '
             f'{self.actual_points} '
-            f'({self.total_predicted_points_per_value:.1f}/£) = '
+            f'({self.million_per_total_predicted_points:.1f}£) = '
             f'{self.xg_predicted_points:.1f} xG '
             f'+ {self.xa_predicted_points:.1f} xA '
             f'+ {self.dc_predicted_points:.1f} DC '
             f'+ {self.cs_predicted_points:.1f} CS'
+            f'{role_suffix}'
         )
 
 
@@ -330,7 +352,7 @@ class GameweekPredictions:
 
     @property
     def players_total_points_per_value_desc(self) -> list[PlayerTotalPrediction]:
-        return sorted(self.players_total_predictions, key=lambda p: -p.total_predicted_points_per_value)
+        return sorted(self.players_total_predictions, key=lambda p: p.million_per_total_predicted_points)
 
     @property
     def teams_total_predictions(self) -> list[TeamTotalPrediction]:

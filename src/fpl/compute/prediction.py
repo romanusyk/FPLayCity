@@ -10,6 +10,7 @@ Pipeline:
 - PredictionPipeline: Coordinates all nodes, provides predict() and score() API
 """
 from src.fpl.compute.base import LazyNode
+from src.fpl.models.fotmob_adapter import FotmobAdapter
 from src.fpl.models.season import Season
 from src.fpl.models.immutable import Query
 from src.fpl.models.prediction import (
@@ -41,8 +42,14 @@ class SeasonNode(LazyNode[Season]):
         Season with statistics up to (but not including) next_gameweek
     """
     
+    def __init__(self, rotation_adapter: FotmobAdapter | None = None):
+        super().__init__()
+        self.rotation_adapter = rotation_adapter
+
     def compute(self, next_gameweek: int, **params) -> Season:
         season = Season()
+        if self.rotation_adapter is not None:
+            season.attach_rotation_adapter(self.rotation_adapter)
         for gw in range(1, next_gameweek):
             fixtures = Query.fixtures_by_gameweek(gw)
             if fixtures:  # Only play if fixtures exist
@@ -178,8 +185,8 @@ class PredictionPipeline:
         )
     """
     
-    def __init__(self):
-        self.season = SeasonNode()
+    def __init__(self, rotation_adapter: FotmobAdapter | None = None):
+        self.season = SeasonNode(rotation_adapter=rotation_adapter)
         self.gameweek_prediction = GameweekPredictionNode(self.season)
         self.gameweek_predictions = GameweekPredictionsNode(self.season, self.gameweek_prediction)
     

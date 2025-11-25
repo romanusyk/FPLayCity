@@ -18,66 +18,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, quote, urlparse
 
-from pydantic import BaseModel
 from playwright.async_api import APIRequestContext, BrowserContext, async_playwright
 from src.fpl.loader.utils import ensure_dir_exists
+from src.fotmob.models.fotmob import FotmobTeam, FotmobPlayer, Substitution, MatchDetails
+from src.fotmob.models.fotmob_metadata import TEAMS, TEAM_NAME_TO_ID
 
 
 FOTMOB_BASE_URL = "https://www.fotmob.com"
-
-
-TEAMS = {
-    9825: "Arsenal",
-    8456: "Manchester City",
-    8455: "Chelsea",
-    8472: "Southampton",
-    8586: "Spurs",
-    10252: "Aston Villa",
-    10260: "Manchester United",
-    8650: "Liverpool",
-    8678: "Bournemouth",
-    9826: "Crystal Palace",
-    10204: "Brighton",
-    9937: "Brentford",
-    8668: "Everton",
-    10261: "Newcastle",
-    9879: "Fulham",
-    8463: "Leeds",
-    8191: "Burnley",
-    8654: "Westham",
-    10203: "Nottingham",
-    8602: "Wolves",
-}
-
-
-class FotmobTeam(BaseModel):
-    id: int
-    name: str
-
-
-class FotmobPlayer(BaseModel):
-    id: int
-    name: str
-
-
-class Substitution(BaseModel):
-    time: int
-    player_out_injured: bool
-    player_out: FotmobPlayer
-    player_in: FotmobPlayer
-
-
-class MatchDetails(BaseModel):
-    match_id: int
-    event_time: datetime
-    opponent_team: FotmobTeam
-    starters: list[FotmobPlayer]
-    benched: list[FotmobPlayer]
-    unavailable: list[FotmobPlayer]
-    subs_log: list[Substitution]
-
-
-_TEAM_NAME_TO_ID: dict[str, int] = {name: tid for tid, name in TEAMS.items()}
 
 
 class TeamFetchError(RuntimeError):
@@ -178,6 +125,9 @@ def _build_match_details(match_json: dict, team_id: int) -> MatchDetails:
     if match_id_raw is None:
         raise ValueError("Match JSON missing matchId")
     match_id = int(match_id_raw)
+    league_name = general.get("leagueName")
+    if not league_name:
+        raise ValueError("Match JSON missing league name")
 
     opponent_team = FotmobTeam(
         id=_as_int(opponent_section.get("id")),
@@ -197,6 +147,7 @@ def _build_match_details(match_json: dict, team_id: int) -> MatchDetails:
         benched=benched,
         unavailable=unavailable,
         subs_log=subs_log,
+        league_name=league_name,
     )
 
 
@@ -323,14 +274,11 @@ class FotMobClient:
 
     async def get_team_data(self, team_id: int, ccode3: str = "GBR") -> Dict[str, Any]:
         """Fetch team data from FotMob API.
-
         Args:
             team_id: FotMob team ID (e.g., 8650 for Liverpool)
             ccode3: Country code (default: "GBR" for United Kingdom)
-
         Returns:
             Team data as dictionary
-
         Example:
             >>> async with FotMobClient() as client:
             ...     data = await client.get_team_data(8650, "GBR")
@@ -373,7 +321,6 @@ class FotMobClient:
         matches_limit: Optional[int] = None,
     ) -> list[int]:
         """Load team fixtures and save new finished matches' details.
-
         Returns list of match IDs saved.
         """
         # Step 1: Load team data via page and capture API JSON
@@ -469,7 +416,6 @@ def load_saved_match_details(
     limit_per_team: Optional[int] = None,
 ) -> dict[str, list[MatchDetails]]:
     """Load saved matchDetails JSON files and convert them into MatchDetails models.
-
     Returns:
         Mapping team_name -> list of MatchDetails sorted by event_time.
     """
@@ -480,9 +426,9 @@ def load_saved_match_details(
 
     selected_teams = team_filter if team_filter is not None else [d.name for d in base_dir.iterdir() if d.is_dir()]
     for team_name in selected_teams:
-        if team_name not in _TEAM_NAME_TO_ID:
+        if team_name not in TEAM_NAME_TO_ID:
             raise ValueError(f"Unknown team directory '{team_name}' – no matching FotMob team id in TEAMS")
-        team_id = _TEAM_NAME_TO_ID[team_name]
+        team_id = TEAM_NAME_TO_ID[team_name]
         team_path = base_dir / team_name
         if not team_path.is_dir():
             continue
@@ -549,4 +495,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
 

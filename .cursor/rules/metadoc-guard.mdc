@@ -1,0 +1,6 @@
+---
+description: Always consult metadoc before editing Markdown or Python files
+alwaysApply: true
+---
+Before modifying any `.md` or `.py` file, read `@docs/metadoc.md` and follow its guidance (audience, concise style, top‑down structure, placement to avoid duplication, linking conventions, and code reference rules). Keep docs and code in lockstep.
+
