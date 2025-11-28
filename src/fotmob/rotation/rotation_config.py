@@ -47,5 +47,4 @@ PLAYER_MAPPING_OVERRIDES: list[PlayerMappingOverride] = [
         fpl_player_id=646,
         note="João Victor Gomes da Silva",
     ),
-]*** End Patch```} /> последние error? JSON? The apply_patch tool expects pure string freeform, not JSON. I need to call functions.apply_patch with the patch string only. Let's re-call properly. 
-
+]

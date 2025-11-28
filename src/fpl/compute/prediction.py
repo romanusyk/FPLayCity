@@ -10,7 +10,7 @@ Pipeline:
 - PredictionPipeline: Coordinates all nodes, provides predict() and score() API
 """
 from src.fpl.compute.base import LazyNode
-from src.fpl.models.fotmob_adapter import FotmobAdapter
+from src.fotmob.rotation.fotmob_adapter import FotmobAdapter
 from src.fpl.models.season import Season
 from src.fpl.models.immutable import Query
 from src.fpl.models.prediction import (
