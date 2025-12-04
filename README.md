@@ -15,6 +15,7 @@ Fantasy Premier League stats & predictions
 - `Fixture`: Match with home/away teams, scores, gameweek, outcome
 - `Player`: FPL player with position, team, cost
 - `PlayerFixture`: Player performance in a fixture (points, minutes, xG, xA, CS, DC)
+- `News`: News article with metadata, tags, gameweek assignment, and collection source
 
 **Statistics** (aggregated metrics):
 - `Aggregate`: Total/count pairs for calculating averages
@@ -55,10 +56,14 @@ Fantasy Premier League stats & predictions
 ├─────────────────────────────────────────────────────────────┤
 │ • fetch.py: Async HTTP client wrapper                       │
 │ • load.py: Fetch & cache FPL API responses                  │
-│   - BaseResource: Versioned snapshots with freshness checks │
-│   - SimpleResource: Single endpoints                        │
-│   - CompoundResource: Multiple related endpoints            │
-│   - bootstrap(): Initial load → populates global collections│
+│   - JsonSnapshotStore (`loader/store`): timestamped snapshots│
+│     with freshness + auto-cleanup                           │
+│   - fetch_json + fetch_player_summaries: explicit HTTP flow │
+│   - convert module (`loader/convert`): JSON ↔ dataclasses    │
+│   - bootstrap(): populates registries; load(): refreshes    │
+│   - Single snapshot storage: latest only, auto-cleanup      │
+│   - News loader: Fetch & persist articles with gameweek    │
+│     assignment and hierarchical storage                     │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -67,8 +72,10 @@ Fantasy Premier League stats & predictions
 │ Global indexed collections:                                 │
 │ • Teams: Collection[Team] by team_id                        │
 │ • Fixtures: Collection[Fixture] by fixture_id, gameweek     │
-│ • Players: Dict[player_id → Player]                         │
-│ • PlayerFixtures: Custom collection with multiple lookups   │
+│ • Players: Collection[Player] by player_id                 │
+│ • PlayerFixtures: Collection with multiple lookups           │
+│ • Gameweeks: Collection[Gameweek] by gameweek              │
+│ • News: Collection[News] by id, gameweek, collection        │
 │                                                              │
 │ Pattern: Indexed collections (collection.py) for O(1) access│
 └─────────────────────────────────────────────────────────────┘
@@ -119,7 +126,7 @@ Fantasy Premier League stats & predictions
 ### Data Flow
 
 ```
-FPL API → load.py → JSON cache → bootstrap() → Collections (Teams/Fixtures/Players)
+FPL API → load.py → JSON cache → bootstrap() → Collections (Teams/Fixtures/Players/News)
                                                       ↓
                                         Season.play(fixtures) → Statistics
                                                       ↓
@@ -131,7 +138,7 @@ FPL API → load.py → JSON cache → bootstrap() → Collections (Teams/Fixtur
 ### Key Innovations
 
 1. **Indexed Collections**: O(1) lookups without database overhead
-2. **Versioned Snapshots**: All API responses timestamped for reproducibility
+2. **Timestamped Snapshots**: All API responses timestamped for reproducibility (single latest snapshot per resource)
 3. **Progressive Replay**: Simulate season to build realistic statistics
 4. **FDR Normalization**: Scale predictions by fixture difficulty
 5. **Component-Based Points**: CS + xG + xA + DC → total points
@@ -143,7 +150,7 @@ FPL API → load.py → JSON cache → bootstrap() → Collections (Teams/Fixtur
 ✅ **Indexed Collections**: O(1) lookups are fast and elegant
 ✅ **Progressive Replay**: Backtesting is realistic and prevents data leakage
 ✅ **Immutable Data**: Core models are stable and don't change unexpectedly
-✅ **Versioned Snapshots**: Reproducibility is built-in
+✅ **Timestamped Snapshots**: Reproducibility is built-in with single-snapshot storage
 
 ### Current Pain Points
 
@@ -692,9 +699,21 @@ class Player(BaseModel):
 
 ## Usage
 
+**Migration (one-time, if upgrading from old directory-based storage):**
+```bash
+uv run -m src.fpl.loader.migrate_single_snapshot --season 2024-2025 --season 2025-2026
+```
+
 Load data from FPL API:
 ```bash
 uv run -m src.fpl.loader.load
+```
+
+Fetch news articles:
+```bash
+uv run -m src.fpl.loader.news.pl fpl_scout --last-gw=15
+uv run -m src.fpl.loader.news.pl fpl_scout --last-gw=15 --first-gw=14
+uv run -m src.fpl.loader.news.pl fpl_scout --last-gw=15 --list-known-content
 ```
 
 Run predictions & evaluation:
@@ -725,7 +744,7 @@ uv run pytest tests/test_immutable.py::TestQueryFacade::test_query_player_by_nam
 ```
 
 **Test Coverage:**
-- ✅ Collections: Teams, Fixtures, Players, PlayerFixtures
-- ✅ Query facade: All lookup methods
+- ✅ Collections: Teams, Fixtures, Players, PlayerFixtures, Gameweeks, News
+- ✅ Query facade: All lookup methods (including news queries)
 - ✅ Data integrity: Relationships and computed properties
 - ⚠️ Unsupported indices: Tests verify they raise `KeyError`

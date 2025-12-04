@@ -1,45 +1,43 @@
 # Overview
-Utilities to fetch and persist Fantasy Premier League news articles authored by “The Scout” from the Premier League content API. This module paginates the news feed, stores new articles under `data/<season>/news/`, and provides helpers to list saved articles with optional date filtering.
+Fetcher for Premier League "The Scout" stories. The loader assigns each article to the correct upcoming gameweek, persists the raw payload using `JsonSnapshotStore` under `data/<season>/news/<gameweek>/<collection>/raw/<id>_<timestamp>.json`, and can list previously stored articles for specific gameweeks and collections.
 
 # Key Concepts
-- **Source**: Premier League content API, filtered to series `fantasy` and content creator `The-Scout`.
-- **Pagination and idempotence**: Iterates in pages and stops when encountering the first already-known article (by `id` and `date`), avoiding duplicate writes.
-- **Persistence layout**: Each article is written as JSON to `data/2025-2026/news/<id>.json` including URL, date, title, summary, body, and `lastUpdated`.
+- **Snapshot-driven metadata**: `load_recent_news` never calls `bootstrap`. Instead it reads the latest `data/<season>/bootstrap_*.json` snapshot via `JsonSnapshotStore` to obtain `Gameweek` deadlines before fetching news.
+- **Two-gameweek default window**: After the first page is fetched the script infers “next gameweek” from the newest article, sets `last_gw` to that value (when not provided), and sets `first_gw = max(1, last_gw - 1)`. Pagination stops once a page contains articles older than `first_gw`, but every fetched article on that page is still persisted.
+- **Fail-loud persistence**: Articles with missing IDs or timestamps raise immediately. Every article is saved even if `--limit` is reached.
+- **Timestamped storage**: Articles are stored using `JsonSnapshotStore` with timestamped filenames (`{id}_{timestamp}.json`). Only the latest snapshot is kept per article (older snapshots are automatically deleted).
+- **Gameweek-specific listing**: `--list-known` and `--list-known-content` load articles for specific gameweeks and collections using `list_saved_news()` with required `gameweek` and `collection` parameters.
 
 # Components
-- `fetch_news` in `src/fpl/loader/news/pl.py`: Fetch one page of detailed news items.
-- `load_recent_news` in `src/fpl/loader/news/pl.py`: Paginate and persist new items until the first known article (or an explicit limit).
-- `read_known_news` in `src/fpl/loader/news/pl.py`: Read saved article metadata (omits `body`) for quick listing.
-- `read_known_news_content` in `src/fpl/loader/news/pl.py`: Read saved articles including full HTML `body`.
-- `main` in `src/fpl/loader/news/pl.py`: CLI entry point for fetching or listing.
+- `NewsCollectionConfig` in `src/fpl/loader/news/pl.py`: Declarative configuration for each source (API params + converter).
+- `fetch_news` in `src/fpl/loader/news/pl.py`: Calls the PL content API with offset/limit and logs page metadata.
+- `load_recent_news` in `src/fpl/loader/news/pl.py`: Main pagination loop. Loads gameweek deadlines from the bootstrap snapshot, converts API records via `news_json_to_model` in `src/fpl/loader/convert/news.py`, persists per-article files using `JsonSnapshotStore`, enforces the two-gameweek window, and honors `--limit` only after the current page finishes saving.
+- `list_saved_news` in `src/fpl/loader/news/pl.py`: Loads articles from disk for a specific gameweek and collection using `JsonSnapshotStore.load_latest()` for each article, and returns JSON-ready dicts (optionally stripping `body` before printing).
+- CLI `main` in `src/fpl/loader/news/pl.py`: Argument parser powering both the fetch workflow and the simple listing mode.
 
 # Data/Control Flow
-1. `load_recent_news` calls `fetch_news(offset, limit=page_size)`.
-2. For each returned item:
-   - If already known with the same `date`, stop pagination (assumes newer pages were already saved).
-   - Otherwise extract fields and write `data/<season>/news/<id>.json`.
-3. Continue advancing `offset` until a known item is encountered, items are exhausted, or `--limit` is reached.
+1. `main` resolves the collection config (currently only `fpl_scout`) and either lists saved news or triggers fetch mode.
+2. Fetch mode:
+   - Load the `bootstrap` snapshot through `JsonSnapshotStore` to build `Gameweek` objects (no network call).
+   - For each offset: `fetch_news` → convert each article using `news_json_to_model`, assign a gameweek via `_assign_gameweek`, and persist the raw article JSON using `JsonSnapshotStore` under `data/<season>/news/<gw>/<collection>/raw/<id>_<timestamp>.json`.
+   - After the first page derive default `first_gw`/`last_gw` if the user omitted them; stop fetching once a page contains articles older than `first_gw` or once `--limit` is met (after saving the page).
+3. Listing mode loads articles for specific gameweeks and collections using `list_saved_news()` with `gameweek` and `collection` parameters, and prints compact summaries (optionally including body HTML).
 
 # Public API
-- `fetch_news(client, offset=0, limit=10) -> dict`: Returns a page payload (`pageInfo`, `content` list).
-- `load_recent_news(client, page_size=10, sleep_sec=0.0, limit=None) -> list[int]`: Saves new items, returns the list of saved IDs.
-- `read_known_news() -> list[dict]`: Reads saved items without `body`, sorted by `date` desc.
-- `read_known_news_content() -> list[dict]`: Reads saved items with `body`, sorted by `date` desc.
-
-CLI usage (module path):
-
-```bash
-python -m src.fpl.loader.news.pl --page-size 10 --limit 20
-python -m src.fpl.loader.news.pl --list-known --min-days 7
-python -m src.fpl.loader.news.pl --list-known-content --output-json data/2025-2026/dumps/news.json
-```
+- CLI fetch: `uv run python -m src.fpl.loader.news.pl fpl_scout --last-gw M [--first-gw N --page-size K --limit L --sleep-sec S]`
+- CLI list without body: `uv run python -m src.fpl.loader.news.pl fpl_scout --last-gw M --list-known [--first-gw N]`
+- CLI list with body: `uv run python -m src.fpl.loader.news.pl fpl_scout --last-gw M --list-known-content [--first-gw N]`
+- Programmatic helpers:
+  - `async fetch_news(client, config, offset, limit) -> dict`
+  - `async load_recent_news(client, config, gameweeks, season, page_size, sleep_sec, limit, first_gw, last_gw) -> list[int]`
+  - `list_saved_news(collection, gameweek, include_body, season) -> list[dict]`
 
 # Key Paths
-- Module: `src/fpl/loader/news/pl.py`
-- Package export: `src/fpl/loader/news/__init__.py`
-- Data directory (current season): `data/2025-2026/news/`
+- Loader implementation: `src/fpl/loader/news/pl.py`
+- Convert helpers: `src/fpl/loader/convert/news.py`
+- Data root for the current season: `data/2025-2026/news/<gameweek>/<collection>/raw/<id>_<timestamp>.json`
 
 # Related Docs
-- Documentation standards and structure in `docs/metadoc.md` — top‑down style, concise writing, explicit symbol+path references.
-
-
+- News north star (data model, storage hierarchy) — `docs/news_ns.md`
+- Loader overview (API snapshots + registries) — `src/fpl/loader/README.md`
+- Convert module overview — `src/fpl/loader/convert/README.md`

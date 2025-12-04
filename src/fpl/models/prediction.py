@@ -179,9 +179,11 @@ class PlayerTotalPrediction:
             self,
             season: Season,
             fixture_predictions: list[PlayerFixturePrediction],
+            min_history_gws: int,
     ):
         self.season = season
         self.fixture_predictions = fixture_predictions
+        self.min_history_gws = min_history_gws
 
     @property
     def player(self) -> Player:
@@ -273,20 +275,36 @@ class PlayerTotalPrediction:
             return None
         return self.season.get_rival_start_hint(self.player.player_id)
 
+    @property
+    def a_points_breakdown(self) -> str:
+        return (
+            f'{self.total_predicted_points:.2f} '
+            f'({self.million_per_total_predicted_points:.2f}£) = '
+            f'{self.xg_predicted_points:.2f} '
+            f'{int(100 * self.xg_predicted_points / self.total_predicted_points)}% xG '
+            f'+ {self.xa_predicted_points:.2f} '
+            f'{int(100 * self.xa_predicted_points / self.total_predicted_points)}% xA '
+            f'+ {self.dc_predicted_points:.2f} '
+            f'{int(100 * self.dc_predicted_points / self.total_predicted_points)}% DC '
+            f'+ {self.cs_predicted_points:.2f} '
+            f'{int(100 * self.cs_predicted_points / self.total_predicted_points)}% CS '
+        )
+
     def __repr__(self):
+        xg_share = self.season.player_stats[self.player.player_id].share_last(self.min_history_gws, 'xg')
+        xa_share = self.season.player_stats[self.player.player_id].share_last(self.min_history_gws, 'xa')
         role_suffix = ''
         squad_role = self.squad_role
         if squad_role and squad_role.total_matches:
             role_suffix = f" [{'FT' if squad_role.is_first_team else 'ST'} {squad_role.starts}/{squad_role.total_matches}]"
         return (
             f'{self.red_flags}'
-            f'{self.player}: {self.total_predicted_points:.1f} | '
-            f'{self.actual_points} '
-            f'({self.million_per_total_predicted_points:.1f}£) = '
-            f'{self.xg_predicted_points:.1f} xG '
-            f'+ {self.xa_predicted_points:.1f} xA '
-            f'+ {self.dc_predicted_points:.1f} DC '
-            f'+ {self.cs_predicted_points:.1f} CS'
+            f'{self.player}: {self.total_predicted_points:.2f} '
+            f'({self.million_per_total_predicted_points:.2f}£) '
+            f'team['
+            f'{100 * xg_share:.1f}% xG '
+            f'{100 * xa_share:.1f}% xA'
+            f'] '
             f'{role_suffix}'
         )
 
@@ -320,11 +338,20 @@ class GameweekPredictions:
     """
     gameweek_predictions: list[GameweekPrediction]
     pos: PlayerType | None
+    team_only: bool
 
-    def __init__(self, season: Season, gameweek_predictions: list[GameweekPrediction]):
+    def __init__(self, season: Season, gameweek_predictions: list[GameweekPrediction], min_history_gws: int):
         self.season = season
         self.gameweek_predictions = gameweek_predictions
+        self.min_history_gws = min_history_gws
         self.pos = None
+        self.team_only = False
+        self.my_team = [
+            67, 470,
+            373, 411, 72, 436, 261,
+            16, 119, 384, 390, 169,
+            430, 136, 283,
+        ]
 
     @property
     def teams_total_cs_desc(self) -> list[TeamTotalPrediction]:
@@ -369,8 +396,11 @@ class GameweekPredictions:
         for player_id in self.gameweek_predictions[0].player_fixture_predictions:
             if self.pos is not None and Query.player(player_id).player_type != self.pos:
                 continue
+            if self.team_only and player_id not in self.my_team:
+                continue
             total_predictions.append(PlayerTotalPrediction(
                 self.season,
                 [gp.player_fixture_predictions[player_id] for gp in self.gameweek_predictions],
+                min_history_gws=self.min_history_gws,
             ))
         return total_predictions

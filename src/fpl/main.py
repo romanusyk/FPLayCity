@@ -63,18 +63,19 @@ async def main(client: AsyncClient):
     gw_mapper = build_gameweek_mapper(Query.all_gameweeks())
     fotmob_adapter = FotmobAdapter(match_details, rotation_config, gw_mapper)
 
-    next_gameweek = 12
-    min_history_gws = 6
-    horizon = 4
+    next_gameweek = 15
+    min_history_gws = 3
+    offset = 0
+    horizon = 5
+    target_gameweeks = [next_gameweek + offset, next_gameweek + offset + horizon]
     
     logging.info("Creating lazy computation pipeline...")
     pipeline = PredictionPipeline(rotation_adapter=fotmob_adapter)
     
-    logging.info(f"\n=== Predictions for GWs {next_gameweek} to {next_gameweek + horizon - 1} ===")
+    logging.info(f"\n=== Predictions for GWs {target_gameweeks} ===")
     predictions = pipeline.predict(
         next_gameweek=next_gameweek,
-        target_gameweek=next_gameweek,
-        horizon=horizon,
+        target_gameweeks=target_gameweeks,
         min_history_gws=min_history_gws
     )
     

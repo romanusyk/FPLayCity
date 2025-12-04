@@ -1,0 +1,83 @@
+---
+description: Automatically check and update README files along the path when Python files are modified
+alwaysApply: true
+---
+
+# Update README Files Along Path
+
+When making changes to any `.py` file, check whether any README.md files along the path hierarchy need to be updated.
+
+## Rule
+
+**When modifying a Python file at path `path/to/file.py`:**
+1. Check for README.md files at each directory level along the path:
+   - `README.md` (project root)
+   - `path/README.md`
+   - `path/to/README.md`
+   - (and so on, up to but not including the file itself)
+
+2. For each README.md that exists:
+   - Read the README content
+   - Analyze the changes made to the Python file
+   - Determine if the README needs updates based on:
+     - New functions, classes, or modules added
+     - Changed function signatures or behavior
+     - Removed functionality
+     - New dependencies or imports
+     - Changes to public API or key concepts
+   - Update the README if documentation is outdated or missing
+
+3. Follow the documentation standards in `docs/metadoc.md`:
+   - Use top-down structure
+   - Keep documentation concise
+   - Maintain consistency with existing style
+   - Link to related documentation appropriately
+
+## Examples
+
+**Example 1:** Modifying `src/fpl/test.py`
+- Check and update (if needed):
+  - `README.md` (root)
+  - `src/README.md` (if exists)
+  - `src/fpl/README.md` (if exists)
+
+**Example 2:** Modifying `src/fpl/loader/news/pl.py`
+- Check and update (if needed):
+  - `README.md` (root)
+  - `src/README.md` (if exists)
+  - `src/fpl/README.md` (if exists)
+  - `src/fpl/loader/README.md` (if exists)
+  - `src/fpl/loader/news/README.md` (if exists)
+
+## When to Update
+
+Update README files when:
+- ✅ Adding new public functions, classes, or modules
+- ✅ Changing function signatures or behavior that affects usage
+- ✅ Removing functionality documented in the README
+- ✅ Adding new dependencies or imports that users should know about
+- ✅ Changing key concepts, data structures, or design patterns
+- ✅ Modifying public API endpoints or entry points
+
+Do NOT update README files for:
+- ❌ Internal refactoring that doesn't change public API
+- ❌ Bug fixes that don't affect documented behavior
+- ❌ Code style changes
+- ❌ Comments-only changes
+
+## Implementation
+
+When editing a Python file:
+1. After making changes, identify all README.md files along the path
+2. For each README.md:
+   - Read the current content
+   - Compare with the changes made to the Python file
+   - Determine if updates are needed
+   - If updates are needed, propose and apply them
+
+## Notes
+
+- Only check README.md files that actually exist (don't create new ones unless explicitly requested)
+- Follow the existing documentation style and structure
+- Reference `docs/metadoc.md` for documentation standards
+- Keep updates focused and relevant to the changes made

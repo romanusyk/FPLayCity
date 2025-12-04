@@ -1,43 +1,40 @@
 """
-Data loader for FPL API with caching and versioning.
+Data loader for FPL API with caching and single-snapshot storage.
 
-Resources:
-- BaseResource: Abstract base for managing versioned JSON snapshots with freshness checks
-- SimpleResource: Loads single API endpoints (bootstrap, fixtures)
-- CompoundResource: Loads multiple related endpoints (player details for all players)
+Responsibilities:
+- `store`: Owns timestamped JSON snapshot management (naming, freshness, persistence)
+- `load`: Fetches from the FPL API, coordinates with `store`, and populates registries
+- `convert`: Converts between raw JSON payloads and immutable dataclasses (used by bootstrap)
 
 Main functions:
-- bootstrap(): Initial data load - fetches and populates all global collections (Teams, Fixtures, Players, PlayerFixtures)
+- bootstrap(): Initial data load - fetches and populates all global collections (Teams, Fixtures, Players, PlayerFixtures, News)
 - load(): Incremental data refresh - fetches latest data respecting freshness parameter
+
+Storage format:
+- Each resource stores a single latest snapshot: `<prefix>_<ISO8601_timestamp>.json`
+- Old snapshots are automatically deleted when new ones are created
+- Freshness checks determine if existing snapshots need refresh
 """
 import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta
 
 from httpx import AsyncClient
-from src.fpl.loader.utils import ensure_dir_exists
-from src.fpl.models.immutable import (
-    Teams, Team, TeamFixture, Fixture, Fixtures, Players, Player,
-    PlayerType, PlayerFixtures, PlayerFixture, Gameweek, Gameweeks,
+from src.fpl.loader.convert import (
+    element_json_to_player,
+    event_json_to_gameweek,
+    fixture_json_to_fixture,
+    future_fixture_to_player_fixture,
+    history_entry_to_player_fixture,
+    news_stored_json_to_model,
+    team_json_to_team,
 )
+from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
+from src.fpl.models.immutable import Fixtures, Gameweeks, PlayerFixtures, Players, Teams
 
 BASE_URL = "https://fantasy.premierleague.com/api/"
-RESOURCES = {
-    'main': {
-        'url': 'bootstrap-static/',
-        'dir_path': 'data/2024-2025/bootstrap',
-    },
-    'fixtures': {
-        'url': 'fixtures/',
-        'dir_path': 'data/2024-2025/fixtures',
-    },
-    'elements': {
-        'url': 'element-summary/{resource_id}/',
-        'dir_path': 'data/2024-2025/elements',
-    },
-}
+NEXT_GAMEWEEK = 15
 
 
 class Season:
@@ -46,247 +43,143 @@ class Season:
     s2526 = '2025-2026'
 
 
-class BaseResource:
+async def fetch_json(client: AsyncClient, url_path: str, sleep_sec: float = 0.5) -> dict:
+    """Fetch JSON from the FPL API and throttle requests slightly."""
+    logging.info("Calling %s", url_path)
+    response = await client.get(url=BASE_URL + url_path)
+    response.raise_for_status()
+    response_body = json.loads(response.content)
+    await asyncio.sleep(sleep_sec)
+    return response_body
 
-    def __init__(
-            self,
-            dir_path_template: str,
-            resource_id: str | None = None,
-    ):
-        self.dir_path_template = dir_path_template
-        self.resource_id = resource_id
 
-    @property
-    def dir_path(self) -> str:
-        if self.resource_id:
-            return self.dir_path_template.format(resource_id=self.resource_id)
-        else:
-            return self.dir_path_template
-
-    def build_filename(self, current_dt: datetime) -> str:
-        return os.path.join(
-            self.dir_path,
-            f'response_body_{current_dt.isoformat(timespec="seconds")}.json',
+async def fetch_player_summaries(
+        client: AsyncClient,
+        season: str,
+        element_ids: list[str],
+        freshness: int,
+        sleep_sec: float = 0.5,
+) -> dict[str, dict]:
+    """Fetch per-player element summaries sequentially and persist snapshots."""
+    responses: dict[str, dict] = {}
+    for element_id in element_ids:
+        store = JsonSnapshotStore(
+            SnapshotSpec(base_path=f"data/{season}/elements/{element_id}")
         )
 
-    def get_all_states(self) -> list[datetime]:
-        result = []
-        for file_name in os.listdir(self.dir_path):
-            if not file_name.endswith('.json'):
-                continue
-            prefix, dt_str = file_name.replace('.json', '').rsplit('_', 1)
-            dt = datetime.fromisoformat(dt_str)
-            result.append(dt)
-        result.sort()
-        return result
-
-    @staticmethod
-    def is_up_to_date(latest_state: datetime, freshness: int) -> bool:
-        return datetime.now() - latest_state < timedelta(days=freshness)
-
-    async def load(self, client: AsyncClient, current_dt: datetime, sleep_sec: float = 0.5) -> dict:
-        raise NotImplemented
-
-    async def get_latest_state(
-            self,
-            freshness: int,
-            client: AsyncClient,
-            sleep_sec: float = 0.5,
-    ) -> dict:
-        all_states = self.get_all_states()
-        if all_states and self.is_up_to_date(all_states[-1], freshness):
-            latest_state = all_states[-1]
-        else:
-            latest_state = datetime.now()
-            await self.load(client, latest_state, sleep_sec=sleep_sec)
-        with open(self.build_filename(latest_state), "r") as f:
-            return json.load(f)
-
-
-class SimpleResource(BaseResource):
-
-    def __init__(
-            self,
-            url_template: str,
-            dir_path_template: str,
-            resource_id: str | None = None,
-    ):
-        super().__init__(dir_path_template, resource_id)
-        self.url_template = url_template
-
-    @property
-    def url(self) -> str:
-        if self.resource_id:
-            return self.url_template.format(resource_id=self.resource_id)
-        else:
-            return self.url_template
-
-    async def load(self, client: AsyncClient, current_dt: datetime, sleep_sec: float = 0.5) -> dict:
-        logging.info('Calling %s', self.url)
-        response = await client.get(url=BASE_URL + self.url)
-        response.raise_for_status()
-        response_body = json.loads(response.content)
-        filepath = self.build_filename(current_dt)
-        ensure_dir_exists(filepath)
-        with open(filepath, "w") as f:
-            json.dump(response_body, f, indent=4)
-        await asyncio.sleep(sleep_sec)
-        return response_body
-
-
-class CompoundResource(BaseResource):
-
-    resources: dict[str, SimpleResource]
-
-    def __init__(self, parent_dir_path: str, child_url_template, resource_ids: list[str]):
-        super().__init__(parent_dir_path)
-        self.resources = {}
-        for resource_id in resource_ids:
-            self.resources[resource_id] = SimpleResource(
-                url_template=child_url_template,
-                dir_path_template=os.path.join(parent_dir_path, '{resource_id}/'),
-                resource_id=resource_id,
+        async def _fetch(resource_id: str = element_id) -> dict:
+            return await fetch_json(
+                client,
+                f"element-summary/{resource_id}/",
+                sleep_sec=sleep_sec,
             )
 
-    async def load(self, client: AsyncClient, current_dt: datetime, sleep_sec: float = 0.5) -> dict:
-        response_body = {}
-        for resource_id, resource in self.resources.items():
-            resource_body = await resource.load(client, current_dt, sleep_sec=sleep_sec)
-            response_body[resource_id] = resource_body
-        filepath = self.build_filename(current_dt)
-        ensure_dir_exists(filepath)
-        with open(filepath, "w") as f:
-            json.dump(response_body, f, indent=4)
-        return response_body
+        responses[element_id] = await store.get_or_fetch(freshness, _fetch)
+
+    aggregate_store = JsonSnapshotStore(
+        SnapshotSpec(base_path=f"data/{season}/elements")
+    )
+    aggregate_store.write(responses)
+    return responses
 
 
 async def load(client: AsyncClient, freshness: int = 1):
     season = Season.s2526
 
-    main_resource = SimpleResource('bootstrap-static/', f'data/{season}/bootstrap')
-    fixtures_resource = SimpleResource('fixtures/', f'data/{season}/fixtures')
-
-    main_response_body = await main_resource.get_latest_state(freshness, client)
-    await fixtures_resource.get_latest_state(freshness, client)
-
-    elements_resource = CompoundResource(
-        parent_dir_path=f'data/{season}/elements',
-        child_url_template='element-summary/{resource_id}/',
-        resource_ids=[str(element['id']) for element in main_response_body['elements']],
+    bootstrap_store = JsonSnapshotStore(
+        SnapshotSpec(base_path=f"data/{season}/bootstrap")
     )
-    await elements_resource.get_latest_state(freshness, client)
+    fixtures_store = JsonSnapshotStore(
+        SnapshotSpec(base_path=f"data/{season}/fixtures")
+    )
+
+    main_response_body = await bootstrap_store.get_or_fetch(
+        freshness,
+        lambda: fetch_json(client, "bootstrap-static/"),
+    )
+    await fixtures_store.get_or_fetch(
+        freshness,
+        lambda: fetch_json(client, "fixtures/"),
+    )
+
+    await fetch_player_summaries(
+        client,
+        season,
+        [str(element["id"]) for element in main_response_body["elements"]],
+        freshness,
+    )
 
 
 async def bootstrap(client: AsyncClient):
     season = Season.s2526
     freshness = 1000
 
-    main_resource = SimpleResource('bootstrap-static/', f'data/{season}/bootstrap')
-    fixtures_resource = SimpleResource('fixtures/', f'data/{season}/fixtures')
-
-    main_response_body = await main_resource.get_latest_state(freshness, client)
-    fixtures_response_body = await fixtures_resource.get_latest_state(freshness, client)
-
-    elements_resource = CompoundResource(
-        parent_dir_path=f'data/{season}/elements',
-        child_url_template='element-summary/{resource_id}/',
-        resource_ids=[str(element['id']) for element in main_response_body['elements']],
+    bootstrap_store = JsonSnapshotStore(
+        SnapshotSpec(base_path=f"data/{season}/bootstrap")
     )
-    player_response_bodies = await elements_resource.get_latest_state(freshness, client)
+    fixtures_store = JsonSnapshotStore(
+        SnapshotSpec(base_path=f"data/{season}/fixtures")
+    )
+
+    main_response_body = await bootstrap_store.get_or_fetch(
+        freshness,
+        lambda: fetch_json(client, "bootstrap-static/"),
+    )
+    fixtures_response_body = await fixtures_store.get_or_fetch(
+        freshness,
+        lambda: fetch_json(client, "fixtures/"),
+    )
+
+    player_response_bodies = await fetch_player_summaries(
+        client,
+        season,
+        [str(element["id"]) for element in main_response_body["elements"]],
+        freshness,
+    )
 
     for event in main_response_body['events']:
-        deadline_time = event.get('deadline_time')
-        if deadline_time is None:
-            raise ValueError(f"Missing deadline_time for gameweek {event.get('id')}")
-        deadline_dt = datetime.fromisoformat(deadline_time.replace('Z', '+00:00'))
-        Gameweeks.add(
-            Gameweek(
-                gameweek=event['id'],
-                deadline_time=deadline_dt,
-            )
-        )
+        Gameweeks.add(event_json_to_gameweek(event))
 
     for row in main_response_body['teams']:
-        Teams.add(
-            Team(
-                team_id=row['id'],
-                name=row['name'],
-                strength_overall_home=row['strength_overall_home'],
-                strength_overall_away=row['strength_overall_away'],
-                strength_attack_home=row['strength_attack_home'],
-                strength_attack_away=row['strength_attack_away'],
-                strength_defence_home=row['strength_defence_home'],
-                strength_defence_away=row['strength_defence_away'],
-            )
-        )
+        Teams.add(team_json_to_team(row))
 
     for row in fixtures_response_body:
-        home = TeamFixture(
-            fixture_id=row['id'],
-            team_id=row['team_h'],
-            difficulty=row['team_h_difficulty'],
-            score=row['team_h_score'],
-        )
-        away = TeamFixture(
-            fixture_id=row['id'],
-            team_id=row['team_a'],
-            difficulty=row['team_a_difficulty'],
-            score=row['team_a_score'],
-        )
-        fixture = Fixture(
-            fixture_id=row['id'],
-            finished=row['finished'],
-            gameweek=row['event'],
-            home=home,
-            away=away,
-        )
-        Fixtures.add(fixture)
+        Fixtures.add(fixture_json_to_fixture(row))
 
     for player in main_response_body['elements']:
-        Players.add(
-            Player(
-                player_id=player['id'],
-                first_name=player['first_name'],
-                second_name=player['second_name'],
-                web_name=player['web_name'],
-                player_type=PlayerType(player['element_type']),
-                team_id=player['team'],
-                now_cost=player['now_cost'] / 10.,
-                status=player['status'],
-                chance_of_playing_next_round=player['chance_of_playing_next_round'],
-                chance_of_playing_this_round=player['chance_of_playing_this_round'],
-                news=player['news'],
-            )
-        )
+        Players.add(element_json_to_player(player))
 
     for player_id, row in player_response_bodies.items():
         for fixture in row['history']:
-            PlayerFixtures.add(
-                PlayerFixture(
-                    player_id=fixture['element'],
-                    fixture_id=fixture['fixture'],
-                    gameweek=fixture['round'],
-                    was_home=fixture['was_home'],
-                    total_points=fixture['total_points'],
-                    minutes=fixture['minutes'],
-                    goals_scored=fixture['goals_scored'],
-                    assists=fixture['assists'],
-                    clean_sheets=fixture['clean_sheets'],
-                    defensive_contribution=fixture.get('defensive_contribution', 0),
-                    expected_goals=float(fixture['expected_goals']),
-                    expected_assists=float(fixture['expected_assists']),
-                    expected_goal_involvements=float(fixture['expected_goal_involvements']),
-                    expected_goals_conceded=float(fixture['expected_goals_conceded']),
-                    value=fixture['value'],
-                    starts=fixture['starts'],
-                )
-            )
+            if not Fixtures.get_one(fixture_id=fixture['fixture']).finished:
+                continue
+            PlayerFixtures.add(history_entry_to_player_fixture(fixture))
         for fixture in row['fixtures']:
             PlayerFixtures.add(
-                PlayerFixture(
-                    player_id=int(player_id),
-                    fixture_id=fixture['id'],
-                    gameweek=fixture['event'],
-                    was_home=fixture['is_home'],
-                )
+                future_fixture_to_player_fixture(int(player_id), fixture)
             )
+    
+    # Load news articles from disk for the next gameweek
+    # Only load "fpl_scout" collection
+    try:
+        from src.fpl.loader.news.pl import list_saved_news
+        news_items = list_saved_news(
+            collection="fpl_scout",
+            gameweek=NEXT_GAMEWEEK,
+            include_body=True,
+            season=season,
+        )
+        # Populate News collection from loaded items
+        from src.fpl.models.immutable import News as NewsCollection
+        
+        for item in news_items:
+            # Convert stored JSON to NewsModel using converter
+            news_model = news_stored_json_to_model(
+                item,
+                default_gameweek=NEXT_GAMEWEEK,
+                default_collection="fpl_scout",
+            )
+            NewsCollection.add(news_model)
+    except FileNotFoundError:
+        # No news directory or no articles for this gameweek - this is fine
+        pass

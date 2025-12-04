@@ -1,104 +1,125 @@
+import argparse
+import asyncio
 import json
 import os
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional
 
+import httpx
 from httpx import AsyncClient
 
+from src.fpl.loader.convert import event_json_to_gameweek
+from src.fpl.loader.convert.news import news_json_to_model, news_model_to_json
 from src.fpl.loader.load import Season
-from src.fpl.loader.utils import ensure_dir_exists
+from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
+from src.fpl.models.immutable import Gameweek, News as NewsCollection, NewsClass as NewsModel
 
 
 API_BASE = "https://api.premierleague.com/content/premierleague/en"
-NEWS_DIR = f"data/{Season.s2526}/news"
+SEASON = Season.s2526
+NEWS_DIR = f"data/{SEASON}/news"
+DEFAULT_SLEEP_SEC = 0.5
 
 
-def _build_article_url(item: Dict[str, Any]) -> str:
-    canonical = item.get("canonicalUrl") or ""
-    if canonical:
-        return canonical
-    article_id = item.get("id")
-    slug = item.get("titleUrlSegment") or ""
-    if slug:
-        return f"https://www.premierleague.com/en/news/{article_id}/{slug}"
-    return f"https://www.premierleague.com/en/news/{article_id}"
+@dataclass
+class NewsCollectionConfig:
+    """Configuration for a news collection source."""
+    collection_id: str
+    api_base: str
+    api_params: Dict[str, Any]
+    extract_record: Callable[[Dict[str, Any], str], NewsModel]
 
 
-def _ms_to_iso8601(ms: Optional[int]) -> Optional[str]:
-    if not ms:
-        return None
-    try:
-        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
-    except Exception:
-        return None
+def load_gameweeks_from_store(season: str = SEASON) -> List[Gameweek]:
+    """Load bootstrap snapshot via JsonSnapshotStore and convert to Gameweek metadata."""
+    store = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{season}/bootstrap"))
+    snapshot = store.load_latest()
+    events = snapshot.get("events")
+    if not events:
+        raise ValueError("Bootstrap snapshot is missing 'events'; cannot derive gameweeks.")
+    gameweeks = [event_json_to_gameweek(event) for event in events]
+    return sorted(gameweeks, key=lambda gw: gw.gameweek)
 
 
-def _news_filepath(news_id: int) -> str:
-    return os.path.join(NEWS_DIR, f"{news_id}.json")
-
-
-def _is_known(news_id: int, current_date: Optional[str]) -> bool:
-    """Return True if article file exists and stored date matches current.
-
-    If the file exists but the date differs, treat as unknown (False) to force
-    a rewrite, as the article was updated on the source.
-    """
-    path = _news_filepath(news_id)
-    if not os.path.exists(path):
-        return False
-    try:
-        with open(path, "r") as f:
-            saved = json.load(f)
-        saved_date = saved.get("date")
-        if saved_date == current_date:
-            return True
-        print(f"[news] known id={news_id} but date changed: saved={saved_date} current={current_date}; will overwrite")
-        return False
-    except Exception as exc:
-        print(f"[news] failed to read existing file for id={news_id}: {exc}; will overwrite")
-        return False
-
-
-def _extract_record(item: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "id": item.get("id"),
-        "url": _build_article_url(item),
-        "date": item.get("date"),
-        "lastUpdated": _ms_to_iso8601(item.get("lastModified")),
-        "title": item.get("title"),
-        "summary": item.get("summary") or item.get("description"),
-        "body": item.get("body"),
-    }
-
-
-def _parse_article_date(date_str: Optional[str]) -> Optional[datetime]:
+def _parse_article_date(date_str: Optional[str]) -> datetime:
     if not date_str:
-        return None
-    try:
-        # Handle trailing 'Z' by replacing with +00:00 for fromisoformat
-        if date_str.endswith('Z'):
-            date_str = date_str[:-1] + '+00:00'
-        return datetime.fromisoformat(date_str)
-    except Exception:
-        return None
+        raise ValueError("News article is missing a publication timestamp.")
+    if date_str.endswith("Z"):
+        date_str = date_str[:-1] + "+00:00"
+    dt = datetime.fromisoformat(date_str)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
-async def fetch_news(client: AsyncClient, offset: int = 0, limit: int = 10) -> Dict[str, Any]:
-    """Fetch a page of detailed fantasy news authored by The Scout.
+def _assign_gameweek(timestamp: datetime, gameweeks: List[Gameweek]) -> int:
+    if not gameweeks:
+        raise ValueError("Cannot assign gameweek without bootstrap metadata.")
+    sorted_gws = sorted(gameweeks, key=lambda gw: gw.gameweek)
+    first_gw = sorted_gws[0]
+    if timestamp <= first_gw.deadline_time:
+        return first_gw.gameweek
+    for prev, current in zip(sorted_gws, sorted_gws[1:]):
+        if prev.deadline_time < timestamp <= current.deadline_time:
+            return current.gameweek
+    return sorted_gws[-1].gameweek
 
-    Mirrors the cURL the user supplied, but uses query params directly.
-    """
-    params = {
-        "contentTypes": "TEXT",
-        "offset": str(offset),
-        "limit": str(limit),
-        "onlyRestrictedContent": "false",
-        "detail": "DETAILED",
-        # label:Tactics%20and%20Analysis
-        "tagExpression": '("series:fantasy")and("content-creator:The-Scout")',
-    }
-    print(f"[news] GET {API_BASE} offset={offset} limit={limit}")
-    response = await client.get(API_BASE, params=params)
+
+def _persist_news_article(season: str, news_record: NewsModel) -> str:
+    """Persist a news article using JsonSnapshotStore with timestamped filenames."""
+    base_path = f"data/{season}/news/{news_record.gameweek}/{news_record.collection}/raw/{news_record.id}"
+    store = JsonSnapshotStore(SnapshotSpec(base_path=base_path))
+    filepath = store.write(news_model_to_json(news_record), delete_older=True)
+    return filepath
+
+
+def _derive_gameweek_bounds(
+    page_gameweeks: List[int],
+    first_gw: Optional[int],
+    last_gw: Optional[int],
+) -> tuple[int, int]:
+    if not page_gameweeks:
+        raise ValueError("Unable to derive default gameweek bounds from an empty page.")
+    derived_last = max(page_gameweeks)
+    resolved_last = last_gw if last_gw is not None else derived_last
+    resolved_first = first_gw if first_gw is not None else max(1, resolved_last - 1)
+    if resolved_last < resolved_first:
+        resolved_last = resolved_first
+    return resolved_first, resolved_last
+
+
+
+
+def _get_fpl_scout_config() -> NewsCollectionConfig:
+    """Get configuration for FPL Scout collection."""
+    return NewsCollectionConfig(
+        collection_id="fpl_scout",
+        api_base=API_BASE,
+        api_params={
+            "contentTypes": "TEXT",
+            "offset": "0",
+            "limit": "10",
+            "onlyRestrictedContent": "false",
+            "detail": "DETAILED",
+            "tagExpression": '("series:fantasy")and("content-creator:The-Scout")',
+        },
+        extract_record=news_json_to_model,
+    )
+
+
+async def fetch_news(
+    client: AsyncClient,
+    config: NewsCollectionConfig,
+    offset: int = 0,
+    limit: int = 10,
+) -> Dict[str, Any]:
+    """Fetch a page of news using collection-specific configuration."""
+    params = config.api_params.copy()
+    params["offset"] = str(offset)
+    params["limit"] = str(limit)
+    print(f"[news] GET {config.api_base} offset={offset} limit={limit}")
+    response = await client.get(config.api_base, params=params)
     print(f"[news] <- status={response.status_code} bytes={len(response.content)}")
     response.raise_for_status()
     data = json.loads(response.content)
@@ -108,108 +129,138 @@ async def fetch_news(client: AsyncClient, offset: int = 0, limit: int = 10) -> D
     return data
 
 
-def read_known_news() -> List[Dict[str, Any]]:
-    """Read all saved news metadata (without body)."""
-    if not os.path.isdir(NEWS_DIR):
+def list_saved_news(
+    *,
+    collection: str,
+    gameweek: int,
+    include_body: bool,
+    season: str = SEASON,
+) -> List[Dict[str, Any]]:
+    """Load articles from disk for a specific gameweek and collection, return serialized dicts for CLI output."""
+    news_dir = f"data/{season}/news/{gameweek}/{collection}/raw"
+    if not os.path.isdir(news_dir):
         return []
-    results: List[Dict[str, Any]] = []
-    for file_name in os.listdir(NEWS_DIR):
-        if not file_name.endswith(".json"):
-            continue
-        full_path = os.path.join(NEWS_DIR, file_name)
-        try:
-            with open(full_path, "r") as f:
-                data = json.load(f)
-            data.pop("body", None)
-            results.append(data)
-        except Exception:
-            # Skip malformed files rather than failing the whole read
-            continue
-    # Sort by date (desc) when available
-    results.sort(key=lambda x: x.get("date") or "", reverse=True)
-    return results
 
-
-def read_known_news_content() -> List[Dict[str, Any]]:
-    """Read all saved news including full body HTML."""
-    if not os.path.isdir(NEWS_DIR):
-        return []
-    results: List[Dict[str, Any]] = []
-    for file_name in os.listdir(NEWS_DIR):
-        if not file_name.endswith(".json"):
+    loaded_articles: List[Dict[str, Any]] = []
+    
+    # Scan for timestamped article files: {article_id}_{timestamp}.json
+    # Extract unique article IDs from filenames
+    seen_article_ids: set[str] = set()
+    
+    for filename in os.listdir(news_dir):
+        if not filename.endswith(".json"):
             continue
-        full_path = os.path.join(NEWS_DIR, file_name)
+        
+        # Extract article ID from filename (format: {id}_{timestamp}.json)
+        # Find the last underscore before .json to split ID from timestamp
+        parts = filename[:-5].rsplit("_", 1)  # Remove .json, split on last _
+        if len(parts) != 2:
+            # Skip files that don't match the expected format
+            continue
+        
+        article_id_str = parts[0]
+        if article_id_str in seen_article_ids:
+            # Already processed this article (shouldn't happen with delete_older=True, but handle it)
+            continue
+        
+        seen_article_ids.add(article_id_str)
+        
+        # Use JsonSnapshotStore to load the latest snapshot for this article
+        base_path = os.path.join(news_dir, article_id_str)
         try:
-            with open(full_path, "r") as f:
-                data = json.load(f)
-            results.append(data)
-        except Exception:
+            store = JsonSnapshotStore(SnapshotSpec(base_path=base_path))
+            article_data = store.load_latest()
+            loaded_articles.append(article_data)
+        except FileNotFoundError:
+            # Skip if no snapshot found (shouldn't happen, but handle gracefully)
             continue
-    results.sort(key=lambda x: x.get("date") or "", reverse=True)
-    return results
+        except Exception as exc:
+            # Fail loudly on other errors (per project policy)
+            raise ValueError(f"Failed to load article {article_id_str} from {news_dir}: {exc}") from exc
+
+    # Filter and format results
+    filtered: List[Dict[str, Any]] = []
+    for article_data in loaded_articles:
+        payload = article_data.copy()
+        if not include_body:
+            payload["body"] = None
+        filtered.append(payload)
+
+    filtered.sort(key=lambda item: item.get("date") or "", reverse=True)
+    return filtered
 
 
 async def load_recent_news(
     client: AsyncClient,
+    collection_config: NewsCollectionConfig,
+    gameweeks: List[Gameweek],
+    season: str = SEASON,
     page_size: int = 10,
-    sleep_sec: float = 0.0,
+    sleep_sec: float = DEFAULT_SLEEP_SEC,
     limit: Optional[int] = None,
+    first_gw: Optional[int] = None,
+    last_gw: Optional[int] = None,
 ) -> List[int]:
-    """Paginate through news feed and persist until first known item.
-
-    - Fetches in pages of `page_size`.
-    - For each article, if it's already saved, stop pagination and return IDs saved in this run.
-    - Otherwise, save under data/2025-2026/news/<news_id>.json with required fields.
-    - Returns list of saved news IDs (in the order processed).
-    """
-    print(f"[news] load_recent_news page_size={page_size} limit={limit} sleep_sec={sleep_sec}")
+    """Fetch pages sequentially, persist every article, and stop at the requested window."""
+    print(
+        "[news] load_recent_news collection=%s page_size=%s limit=%s sleep_sec=%s first_gw=%s last_gw=%s"
+        % (
+            collection_config.collection_id,
+            page_size,
+            limit,
+            sleep_sec,
+            first_gw,
+            last_gw,
+        )
+    )
     saved_ids: List[int] = []
-
-    # Ensure base dir exists before we start
-    ensure_dir_exists(os.path.join(NEWS_DIR, "_"))
-
     offset = 0
+    pending_bounds = first_gw is None or last_gw is None
+    effective_first = first_gw
+    effective_last = last_gw
+
     while True:
-        page = await fetch_news(client, offset=offset, limit=page_size)
+        page = await fetch_news(client, collection_config, offset=offset, limit=page_size)
+
         items: List[Dict[str, Any]] = page.get("content", [])
         if not items:
-            print("[news] no items returned; stopping")
+            print("[news] no items returned; stopping pagination")
             break
 
-        encountered_known = False
-        reached_limit = False
+        page_gameweeks: List[int] = []
+        stop_after_page = False
+
         for item in items:
-            news_id = item.get("id")
-            if news_id is None:
-                continue
+            news_record = collection_config.extract_record(item, collection_config.collection_id)
+            timestamp_source = news_record.lastUpdated or news_record.date
+            timestamp = _parse_article_date(timestamp_source)
+            gameweek = _assign_gameweek(timestamp, gameweeks)
+            news_record.gameweek = gameweek
+            page_gameweeks.append(gameweek)
 
-            if _is_known(news_id, item.get("date")):
-                print(f"[news] encountered known id={news_id}; stopping pagination")
-                encountered_known = True
-                break
+            filepath = _persist_news_article(season, news_record)
+            print(f"[news] saved id={news_record.id} gw={gameweek} -> {filepath}")
+            saved_ids.append(news_record.id)
 
-            record = _extract_record(item)
-            filepath = _news_filepath(news_id)
-            ensure_dir_exists(filepath)
-            print(f"[news] saving id={news_id} -> {filepath}")
-            with open(filepath, "w") as f:
-                json.dump(record, f, indent=2)
-            saved_ids.append(news_id)
+            if effective_first is not None and gameweek < effective_first:
+                stop_after_page = True
 
-            if limit is not None and len(saved_ids) >= limit:
-                print(f"[news] reached --limit ({limit}); stopping")
-                reached_limit = True
-                break
+        if pending_bounds:
+            effective_first, effective_last = _derive_gameweek_bounds(page_gameweeks, effective_first, effective_last)
+            pending_bounds = False
+            print(f"[news] default gw window: first_gw={effective_first} last_gw={effective_last}")
 
-        if encountered_known or reached_limit:
+        limit_reached = limit is not None and len(saved_ids) >= limit
+
+        if stop_after_page:
+            print(f"[news] reached gw<{effective_first}; stopping after offset {offset}")
+            break
+        if limit_reached:
+            print(f"[news] reached --limit={limit}; stopping after offset {offset}")
             break
 
         offset += page_size
-        print(f"[news] advancing offset to {offset}")
-
         if sleep_sec > 0:
-            # Lazy import to avoid making module async dependent
-            import asyncio  # noqa: WPS433 local import is intentional
             print(f"[news] sleeping {sleep_sec}s before next page")
             await asyncio.sleep(sleep_sec)
 
@@ -218,75 +269,72 @@ async def load_recent_news(
 
 def main():
     """CLI entry point for fetching and listing Fantasy news."""
-    import argparse
-    import asyncio
-    import httpx
+    # Collection registry
+    ALLOWED_COLLECTIONS = {
+        "fpl_scout": _get_fpl_scout_config,
+    }
 
-    parser = argparse.ArgumentParser(description="Fetch and persist Fantasy Premier League news (The Scout)")
+    parser = argparse.ArgumentParser(
+        description="Fetch and persist Fantasy Premier League news",
+        epilog="Examples:\n"
+               "  %(prog)s fpl_scout --last-gw=15\n"
+               "  %(prog)s fpl_scout --last-gw=15 --first-gw=14\n"
+               "  %(prog)s fpl_scout --last-gw=15 --list-known-content",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "news_collection",
+        choices=list(ALLOWED_COLLECTIONS.keys()),
+        help="News collection to use (currently only 'fpl_scout' is supported)",
+    )
     parser.add_argument("--page-size", type=int, default=10, help="Page size for API pagination (default: 10)")
-    parser.add_argument("--sleep-sec", type=float, default=0.0, help="Delay between page requests in seconds")
-    parser.add_argument("--limit", type=int, default=None, help="Maximum number of new articles to save (default: unlimited)")
+    parser.add_argument("--sleep-sec", type=float, default=DEFAULT_SLEEP_SEC, help="Delay between page requests in seconds")
+    parser.add_argument("--limit", type=int, default=None, help="Maximum number of freshly saved articles (default: unlimited)")
+    parser.add_argument("--first-gw", type=int, default=None, help="Lower bound for gameweek window")
+    parser.add_argument("--last-gw", type=int, required=True, help="Upper bound for gameweek window (required)")
 
     action_group = parser.add_mutually_exclusive_group()
-    action_group.add_argument("--list-known", action="store_true", help="List known news (without body)")
-    action_group.add_argument("--list-known-content", action="store_true", help="List known news (including body)")
-
-    # Filters for listing
-    parser.add_argument("--min-days", type=int, default=None, help="Only include articles from the last N days (inclusive)")
-    parser.add_argument("--max-days", type=int, default=None, help="Only include articles older than N days (inclusive)")
-    parser.add_argument("--output-json", type=str, default=None, help="Optional path to write selected articles as a JSON list")
+    action_group.add_argument("--list-known", action="store_true", help="List saved news metadata (body omitted)")
+    action_group.add_argument("--list-known-content", action="store_true", help="List saved news including body HTML")
 
     args = parser.parse_args()
 
+    # Resolve collection config
+    collection_config = ALLOWED_COLLECTIONS[args.news_collection]()
+
     if args.list_known or args.list_known_content:
-        items = read_known_news() if args.list_known else read_known_news_content()
-
-        # Apply date filters
-        now = datetime.now(timezone.utc)
-        filtered: List[dict] = []
-        for it in items:
-            dt = _parse_article_date(it.get("date"))
-            if dt is None:
-                continue
-            # Normalize to aware UTC if naive
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-
-            include = True
-            if args.min_days is not None:
-                # from last N days => dt >= now - N days
-                threshold = now.replace(microsecond=0) - timedelta(days=args.min_days)
-                if dt < threshold:
-                    include = False
-            if include and args.max_days is not None:
-                # older than N days => dt <= now - N days
-                threshold = now.replace(microsecond=0) - timedelta(days=args.max_days)
-                if dt > threshold:
-                    include = False
-            if include:
-                filtered.append(it)
-
-        print(f"Found {len(filtered)} saved articles in {NEWS_DIR} after filtering (from {len(items)})")
-        for item in filtered:
-            print(f"- {item.get('id')} | {item.get('date')} | {item.get('title')}")
-
-        if args.output_json:
-            try:
-                ensure_dir_exists(args.output_json)
-                with open(args.output_json, "w") as f:
-                    json.dump(filtered, f, indent=2)
-                print(f"Wrote {len(filtered)} articles to {args.output_json}")
-            except Exception as exc:
-                print(f"Failed to write JSON to {args.output_json}: {exc}")
+        include_body = args.list_known_content
+        # If first_gw is None, set it to last_gw (load only that gameweek)
+        first_gw = args.first_gw if args.first_gw is not None else args.last_gw
+        
+        # Load articles for each gameweek in the range
+        all_items: List[Dict[str, Any]] = []
+        for gw in range(first_gw, args.last_gw + 1):
+            items = list_saved_news(
+                collection=args.news_collection,
+                gameweek=gw,
+                include_body=include_body,
+            )
+            all_items.extend(items)
+        
+        print(f"Found {len(all_items)} saved articles in {NEWS_DIR}")
+        for record in all_items:
+            print(f"- {record.get('id')} | {record.get('date')} | GW{record.get('gameweek')} | {record.get('title')}")
         return
 
     async def _run() -> None:
+        gameweeks = load_gameweeks_from_store(SEASON)
         async with httpx.AsyncClient() as client:
             saved = await load_recent_news(
                 client,
+                collection_config=collection_config,
+                gameweeks=gameweeks,
+                season=SEASON,
                 page_size=args.page_size,
                 sleep_sec=args.sleep_sec,
                 limit=args.limit,
+                first_gw=args.first_gw,
+                last_gw=args.last_gw,
             )
             if saved:
                 print(f"Saved {len(saved)} new articles: {saved}")

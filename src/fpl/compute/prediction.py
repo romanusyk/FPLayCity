@@ -155,7 +155,7 @@ class GameweekPredictionsNode(LazyNode[GameweekPredictions]):
             )
             gw_predictions.append(gw_pred)
         
-        return GameweekPredictions(self.season(next_gameweek=next_gameweek), gw_predictions)
+        return GameweekPredictions(self.season(next_gameweek=next_gameweek), gw_predictions, min_history_gws)
 
 
 class PredictionPipeline:

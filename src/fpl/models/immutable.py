@@ -8,12 +8,16 @@ Classes:
 - PlayerFixture: Player's performance in a specific fixture (points, minutes, xG, xA, goals, assists)
 - PlayerType: Enum for player positions (GKP, DEF, MID, FWD)
 - Player: FPL player with type, team, cost, and position-specific point values
+- Tag: News article tag with id and label
+- News: News article with metadata, content, tags, gameweek assignment, and collection source
 
 Collections (singletons):
 - Teams: Indexed collection of all teams
 - Fixtures: Indexed collection of all fixtures (by ID and gameweek)
 - PlayerFixtures: Collection of all player-fixture records with lookup by fixture/team/player/gw
 - Players: Indexed collection of all players
+- Gameweeks: Indexed collection of all gameweeks
+- News: Indexed collection of all news articles (by ID, gameweek, collection, and gameweek+collection)
 
 Facade:
 - Query: Convenient facade providing readable methods for all collection indices
@@ -21,6 +25,8 @@ Facade:
   - Fixture lookups: fixture(id), fixtures_by_gameweek(gw)
   - Player lookups: player(id), players_by_team(id), player_by_name(name)
   - PlayerFixture lookups: All supported index combinations
+  - Gameweek lookups: gameweek(id), all_gameweeks()
+  - News lookups: news(id), news_by_gameweek(gw), news_by_collection(collection), news_by_gameweek_and_collection(gw, collection)
 """
 from dataclasses import dataclass
 from enum import Enum
@@ -257,7 +263,7 @@ class Player:
 
     def __repr__(self):
         full_name = f'{self.first_name} {self.second_name}'.strip()
-        return f'{full_name or self.web_name} ({self.player_type.name}) - {self.team.name}'
+        return f'[{self.player_id}] {self.web_name or full_name} ({self.player_type.name}) - {self.team.name}'
 
 
 @dataclass
@@ -268,6 +274,35 @@ class Gameweek:
 
     def __repr__(self):
         return f'GW{self.gameweek} ({self.deadline_time.isoformat()})'
+
+
+@dataclass
+class Tag:
+
+    id: int
+    label: str
+
+
+@dataclass
+class News:
+
+    id: int
+    url: str
+    date: str
+    lastUpdated: str
+    title: str
+    summary: str
+    body: str
+    tags: list[Tag]
+    gameweek: int
+    collection: str
+
+    def __repr__(self):
+        return f'News(id={self.id}, title="{self.title[:50]}...", gw={self.gameweek}, collection={self.collection})'
+
+
+# Store reference to News class before reassigning News to Collection
+NewsClass = News
 
 
 Teams = Collection[Team]([SimpleIndex('team_id')])
@@ -301,6 +336,16 @@ Players = Collection[Player](
 
 Gameweeks = Collection[Gameweek](
     simple_indices=[SimpleIndex('gameweek')],
+)
+
+
+News = Collection[News](
+    simple_indices=[SimpleIndex('id')],
+    list_indices=[
+        ListIndex('gameweek'),
+        ListIndex('collection'),
+        ListIndex('gameweek', 'collection'),
+    ],
 )
 
 
@@ -445,3 +490,25 @@ class Query:
     def all_gameweeks() -> list[Gameweek]:
         """Get all gameweeks."""
         return Gameweeks.items
+
+    # --- News ---
+
+    @staticmethod
+    def news(news_id: int) -> News:
+        """Get news by ID."""
+        return News.get_one(id=news_id)
+
+    @staticmethod
+    def news_by_gameweek(gameweek: int) -> list[News]:
+        """Get all news for a gameweek."""
+        return News.get_list(gameweek=gameweek)
+
+    @staticmethod
+    def news_by_collection(collection: str) -> list[News]:
+        """Get all news from a collection."""
+        return News.get_list(collection=collection)
+
+    @staticmethod
+    def news_by_gameweek_and_collection(gameweek: int, collection: str) -> list[News]:
+        """Get all news for a gameweek from a specific collection."""
+        return News.get_list(gameweek=gameweek, collection=collection)

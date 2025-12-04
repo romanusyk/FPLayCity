@@ -359,7 +359,8 @@ class Season:
     def play(self, fixtures: list[Fixture]):
         for fixture in fixtures:
             assert fixture.gameweek == self.gameweek + 1
-
+            if not fixture.finished:
+                continue
             self.clean_sheet_stats.add_fixture(fixture)
             self.clean_sheet_stats.add_home_stats(fixture)
             self.clean_sheet_stats.add_away_stats(fixture)
