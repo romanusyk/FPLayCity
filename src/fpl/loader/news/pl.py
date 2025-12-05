@@ -135,6 +135,7 @@ def list_saved_news(
     gameweek: int,
     include_body: bool,
     season: str = SEASON,
+    tag_whitelist: list[int] | None = None,
 ) -> List[Dict[str, Any]]:
     """Load articles from disk for a specific gameweek and collection, return serialized dicts for CLI output."""
     news_dir = f"data/{season}/news/{gameweek}/{collection}/raw"
@@ -184,6 +185,9 @@ def list_saved_news(
         payload = article_data.copy()
         if not include_body:
             payload["body"] = None
+        if tag_whitelist:
+            if not any(tag["id"] in tag_whitelist for tag in payload["tags"]):
+                continue
         filtered.append(payload)
 
     filtered.sort(key=lambda item: item.get("date") or "", reverse=True)
@@ -292,6 +296,10 @@ def main():
     parser.add_argument("--limit", type=int, default=None, help="Maximum number of freshly saved articles (default: unlimited)")
     parser.add_argument("--first-gw", type=int, default=None, help="Lower bound for gameweek window")
     parser.add_argument("--last-gw", type=int, required=True, help="Upper bound for gameweek window (required)")
+    parser.add_argument(
+        "--list-tag-id", type=int, action="append", required=False,
+        help="List only the news having one of these tags (applies for list commands only)",
+    )
 
     action_group = parser.add_mutually_exclusive_group()
     action_group.add_argument("--list-known", action="store_true", help="List saved news metadata (body omitted)")
@@ -314,6 +322,7 @@ def main():
                 collection=args.news_collection,
                 gameweek=gw,
                 include_body=include_body,
+                tag_whitelist=args.list_tag_id,
             )
             all_items.extend(items)
         
