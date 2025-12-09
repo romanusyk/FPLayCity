@@ -56,7 +56,7 @@ Refactor the news fetching system to support multiple news collections (initiall
    - Record extraction function (converted to dataclass model)
    - Storage path construction logic
 
-2. **News Model**: Create `News` dataclass in `src/fpl/models/immutable.py` with fields:
+2. **News Model**: Create `NewsModel` dataclass in `src/fpl/models/immutable.py` with fields:
    - `id: int` — News provider identifier
    - `url: str` — Source article URL
    - `date: str` — Publication date (ISO8601)
@@ -76,7 +76,7 @@ Refactor the news fetching system to support multiple news collections (initiall
 
 4. **Collection Integration**: Add `News` collection to `src/fpl/models/immutable.py`:
    ```python
-   News = Collection[News](
+   News = Collection[NewsModel](
        simple_indices=[SimpleIndex('id')],
        list_indices=[
            ListIndex('gameweek'),
@@ -87,10 +87,10 @@ Refactor the news fetching system to support multiple news collections (initiall
    ```
 
 5. **Query Extension**: Add methods to `Query` class:
-   - `news(news_id: int) -> News` — Get news by ID
-   - `news_by_gameweek(gameweek: int) -> list[News]` — Get all news for a gameweek
-   - `news_by_collection(collection: str) -> list[News]` — Get all news from a collection
-   - `news_by_gameweek_and_collection(gameweek: int, collection: str) -> list[News]` — Combined filter
+   - `news(news_id: int) -> NewsModel` — Get news by ID
+   - `news_by_gameweek(gameweek: int) -> list[NewsModel]` — Get all news for a gameweek
+   - `news_by_collection(collection: str) -> list[NewsModel]` — Get all news from a collection
+   - `news_by_gameweek_and_collection(gameweek: int, collection: str) -> list[NewsModel]` — Combined filter
 
 6. **Bootstrap Integration**: Load news collection in `bootstrap()` function:
    - After gameweeks are loaded, read existing news files from disk
@@ -120,7 +120,7 @@ Refactor the news fetching system to support multiple news collections (initiall
 **`src/fpl/loader/news/pl.py`**:
 - Create `NewsCollectionConfig` dataclass
 - Create `fpl_scout_config` instance with current API parameters
-- Refactor `_extract_record()` to return `News` dataclass instance (extract tags as objects with `id` and `label` from API response)
+- Refactor `_extract_record()` to return `NewsModel` dataclass instance (extract tags as objects with `id` and `label` from API response)
 - Add `_assign_gameweek()` function using `Gameweeks` collection
 - Update `load_recent_news()` to accept collection config and gameweek filters
 - Update `read_known_news()` functions to query `News` collection instead of filesystem
@@ -129,7 +129,7 @@ Refactor the news fetching system to support multiple news collections (initiall
 
 **`src/fpl/models/immutable.py`**:
 - Add `Tag` dataclass with `id: int` and `label: str` fields
-- Add `News` dataclass with all required fields (including `tags: list[Tag]`)
+- Add `NewsModel` dataclass with all required fields (including `tags: list[Tag]`)
 - Add `News` collection with appropriate indices
 - Extend `Query` class with news lookup methods
 
@@ -141,14 +141,14 @@ Refactor the news fetching system to support multiple news collections (initiall
 
 1. **Create News Model and Collection**
    - Add `Tag` dataclass with `id: int` and `label: str` to `src/fpl/models/immutable.py`
-   - Add `News` dataclass to `src/fpl/models/immutable.py` (including `tags: list[Tag]`)
+   - Add `NewsModel` dataclass to `src/fpl/models/immutable.py` (including `tags: list[Tag]`)
    - Add `News` collection with indices for `id`, `gameweek`, `collection`, and `(gameweek, collection)`
    - Extend `Query` class with news lookup methods
 
 2. **Create Collection Abstraction**
    - Create `NewsCollectionConfig` dataclass in `src/fpl/loader/news/pl.py`
    - Define `fpl_scout_config` with current API parameters
-   - Convert `_extract_record()` to return `News` instance (extract tags as `Tag` objects with `id` and `label` from API response)
+   - Convert `_extract_record()` to return `NewsModel` instance (extract tags as `Tag` objects with `id` and `label` from API response)
 
 3. **Implement Gameweek Assignment**
    - Add `_assign_gameweek()` function that uses `Gameweeks` collection

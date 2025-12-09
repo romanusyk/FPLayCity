@@ -15,10 +15,10 @@ Pure conversion helpers that translate raw JSON payloads into immutable dataclas
   - `element_json_to_player` / `player_to_json`
   - `history_entry_to_player_fixture`, `future_fixture_to_player_fixture`, plus their reverse helpers
 - `news.py`
-  - `news_json_to_model`: Maps PL content API records to `News` dataclasses (URL construction, summary/body fallback, tag extraction, millisecond timestamps).
-  - `news_stored_json_to_model`: Converts stored JSON (from `news_model_to_json`) back to `News` dataclasses, used when loading persisted articles.
+  - `news_json_to_model`: Maps PL content API records to `NewsModel` dataclasses (URL construction, summary/body fallback, tag extraction, millisecond timestamps).
+  - `news_stored_json_to_model`: Converts stored JSON (from `news_model_to_json`) back to `NewsModel` dataclasses, used when loading persisted articles.
   - `tags_json_to_tags`: Shared helper for the tags sub-objects.
-  - `news_model_to_json`: Serializes a `News` dataclass for both raw article storage and CLI listing output.
+  - `news_model_to_json`: Serializes a `NewsModel` dataclass for both raw article storage and CLI listing output.
 
 # Data/Control Flow
 1. Loaders fetch JSON (FPL API, per-player summaries, or Premier League news).

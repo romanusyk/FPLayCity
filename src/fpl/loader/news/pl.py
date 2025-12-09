@@ -10,10 +10,10 @@ import httpx
 from httpx import AsyncClient
 
 from src.fpl.loader.convert import event_json_to_gameweek
-from src.fpl.loader.convert.news import news_json_to_model, news_model_to_json
-from src.fpl.loader.load import Season
+from src.fpl.loader.convert.news import news_json_to_model, news_model_to_json, news_stored_json_to_model
 from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
-from src.fpl.models.immutable import Gameweek, News as NewsCollection, NewsClass as NewsModel
+from src.fpl.loader.utils import Season
+from src.fpl.models.immutable import Gameweek, NewsModel
 
 
 API_BASE = "https://api.premierleague.com/content/premierleague/en"
@@ -136,62 +136,50 @@ def list_saved_news(
     include_body: bool,
     season: str = SEASON,
     tag_whitelist: list[int] | None = None,
-) -> List[Dict[str, Any]]:
-    """Load articles from disk for a specific gameweek and collection, return serialized dicts for CLI output."""
+) -> List[NewsModel]:
+    """Load articles from disk for a specific gameweek and collection, return News objects."""
     news_dir = f"data/{season}/news/{gameweek}/{collection}/raw"
     if not os.path.isdir(news_dir):
         return []
 
-    loaded_articles: List[Dict[str, Any]] = []
+    loaded_articles: List[NewsModel] = []
     
-    # Scan for timestamped article files: {article_id}_{timestamp}.json
-    # Extract unique article IDs from filenames
-    seen_article_ids: set[str] = set()
+    # Discover all article stores in the directory
+    stores = JsonSnapshotStore.discover_stores(news_dir)
     
-    for filename in os.listdir(news_dir):
-        if not filename.endswith(".json"):
-            continue
+    for store in stores:
+        article_data = store.load_latest()
         
-        # Extract article ID from filename (format: {id}_{timestamp}.json)
-        # Find the last underscore before .json to split ID from timestamp
-        parts = filename[:-5].rsplit("_", 1)  # Remove .json, split on last _
-        if len(parts) != 2:
-            # Skip files that don't match the expected format
-            continue
+        # Convert stored JSON to NewsModel
+        news_model = news_stored_json_to_model(
+            article_data,
+            default_gameweek=gameweek,
+            default_collection=collection,
+        )
         
-        article_id_str = parts[0]
-        if article_id_str in seen_article_ids:
-            # Already processed this article (shouldn't happen with delete_older=True, but handle it)
-            continue
-        
-        seen_article_ids.add(article_id_str)
-        
-        # Use JsonSnapshotStore to load the latest snapshot for this article
-        base_path = os.path.join(news_dir, article_id_str)
-        try:
-            store = JsonSnapshotStore(SnapshotSpec(base_path=base_path))
-            article_data = store.load_latest()
-            loaded_articles.append(article_data)
-        except FileNotFoundError:
-            # Skip if no snapshot found (shouldn't happen, but handle gracefully)
-            continue
-        except Exception as exc:
-            # Fail loudly on other errors (per project policy)
-            raise ValueError(f"Failed to load article {article_id_str} from {news_dir}: {exc}") from exc
-
-    # Filter and format results
-    filtered: List[Dict[str, Any]] = []
-    for article_data in loaded_articles:
-        payload = article_data.copy()
+        # Apply filters
         if not include_body:
-            payload["body"] = None
+            # Create a copy with body set to empty string
+            news_model = NewsModel(
+                id=news_model.id,
+                url=news_model.url,
+                date=news_model.date,
+                lastUpdated=news_model.lastUpdated,
+                title=news_model.title,
+                summary=news_model.summary,
+                body="",
+                tags=news_model.tags,
+                gameweek=news_model.gameweek,
+                collection=news_model.collection,
+            )
         if tag_whitelist:
-            if not any(tag["id"] in tag_whitelist for tag in payload["tags"]):
+            if not any(tag.id in tag_whitelist for tag in news_model.tags):
                 continue
-        filtered.append(payload)
+        
+        loaded_articles.append(news_model)
 
-    filtered.sort(key=lambda item: item.get("date") or "", reverse=True)
-    return filtered
+    loaded_articles.sort(key=lambda item: item.date or "", reverse=True)
+    return loaded_articles
 
 
 async def load_recent_news(
@@ -316,7 +304,7 @@ def main():
         first_gw = args.first_gw if args.first_gw is not None else args.last_gw
         
         # Load articles for each gameweek in the range
-        all_items: List[Dict[str, Any]] = []
+        all_items: List[NewsModel] = []
         for gw in range(first_gw, args.last_gw + 1):
             items = list_saved_news(
                 collection=args.news_collection,
@@ -328,7 +316,7 @@ def main():
         
         print(f"Found {len(all_items)} saved articles in {NEWS_DIR}")
         for record in all_items:
-            print(f"- {record.get('id')} | {record.get('date')} | GW{record.get('gameweek')} | {record.get('title')}")
+            print(f"- {record}")
         return
 
     async def _run() -> None:

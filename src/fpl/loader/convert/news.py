@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from src.fpl.models.immutable import NewsClass as NewsModel, Tag
+from src.fpl.models.immutable import NewsModel, Tag
 
 
 def _build_article_url(item: Dict[str, Any]) -> str:

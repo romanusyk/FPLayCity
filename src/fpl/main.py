@@ -64,7 +64,7 @@ async def main(client: AsyncClient):
     fotmob_adapter = FotmobAdapter(match_details, rotation_config, gw_mapper)
 
     next_gameweek = 15
-    min_history_gws = 3
+    min_history_gws = 5
     offset = 0
     horizon = 5
     target_gameweeks = [next_gameweek + offset, next_gameweek + offset + horizon]

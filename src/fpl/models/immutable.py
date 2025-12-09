@@ -9,7 +9,8 @@ Classes:
 - PlayerType: Enum for player positions (GKP, DEF, MID, FWD)
 - Player: FPL player with type, team, cost, and position-specific point values
 - Tag: News article tag with id and label
-- News: News article with metadata, content, tags, gameweek assignment, and collection source
+- NewsModel: News article with metadata, content, tags, gameweek assignment, and collection source
+- NewsFact: Extracted fact about a player from a news article
 
 Collections (singletons):
 - Teams: Indexed collection of all teams
@@ -18,6 +19,7 @@ Collections (singletons):
 - Players: Indexed collection of all players
 - Gameweeks: Indexed collection of all gameweeks
 - News: Indexed collection of all news articles (by ID, gameweek, collection, and gameweek+collection)
+- NewsFacts: Indexed collection of all news facts
 
 Facade:
 - Query: Convenient facade providing readable methods for all collection indices
@@ -27,8 +29,9 @@ Facade:
   - PlayerFixture lookups: All supported index combinations
   - Gameweek lookups: gameweek(id), all_gameweeks()
   - News lookups: news(id), news_by_gameweek(gw), news_by_collection(collection), news_by_gameweek_and_collection(gw, collection)
+  - NewsFact lookups: news_facts_by_player(id, gw), news_facts_by_gameweek(gw)
 """
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from datetime import datetime
 
@@ -284,7 +287,7 @@ class Tag:
 
 
 @dataclass
-class News:
+class NewsModel:
 
     id: int
     url: str
@@ -298,11 +301,21 @@ class News:
     collection: str
 
     def __repr__(self):
-        return f'News(id={self.id}, title="{self.title[:50]}...", gw={self.gameweek}, collection={self.collection})'
+        return f'NewsModel(id={self.id}, title="{self.title[:50]}...", gw={self.gameweek}, collection={self.collection})'
 
 
-# Store reference to News class before reassigning News to Collection
-NewsClass = News
+@dataclass
+class NewsFact:
+
+    player_id: int
+    news_id: int
+    next_gameweek: int
+    fact: str
+    form: float
+    availability: float
+
+    def __repr__(self):
+        return f'NewsFact(player={self.player_id}, gw={self.next_gameweek}, form={self.form}, avail={self.availability})'
 
 
 Teams = Collection[Team]([SimpleIndex('team_id')])
@@ -339,12 +352,22 @@ Gameweeks = Collection[Gameweek](
 )
 
 
-News = Collection[News](
-    simple_indices=[SimpleIndex('id')],
+News = Collection[NewsModel](
+    simple_indices=[SimpleIndex('id', default_value=None)],
     list_indices=[
-        ListIndex('gameweek'),
-        ListIndex('collection'),
-        ListIndex('gameweek', 'collection'),
+        ListIndex('gameweek', default_factory=list),
+        ListIndex('collection', default_factory=list),
+        ListIndex('gameweek', 'collection', default_factory=list),
+    ],
+)
+
+
+NewsFacts = Collection[NewsFact](
+    simple_indices=[],
+    list_indices=[
+        ListIndex('player_id', default_factory=list),
+        ListIndex('next_gameweek', default_factory=list),
+        ListIndex('player_id', 'next_gameweek', default_factory=list),
     ],
 )
 
@@ -494,21 +517,45 @@ class Query:
     # --- News ---
 
     @staticmethod
-    def news(news_id: int) -> News:
+    def news(news_id: int) -> NewsModel:
         """Get news by ID."""
         return News.get_one(id=news_id)
 
     @staticmethod
-    def news_by_gameweek(gameweek: int) -> list[News]:
+    def news_by_gameweek(gameweek: int) -> list[NewsModel]:
         """Get all news for a gameweek."""
         return News.get_list(gameweek=gameweek)
 
     @staticmethod
-    def news_by_collection(collection: str) -> list[News]:
+    def news_by_collection(collection: str) -> list[NewsModel]:
         """Get all news from a collection."""
         return News.get_list(collection=collection)
 
     @staticmethod
-    def news_by_gameweek_and_collection(gameweek: int, collection: str) -> list[News]:
+    def news_by_gameweek_and_collection(gameweek: int, collection: str) -> list[NewsModel]:
         """Get all news for a gameweek from a specific collection."""
         return News.get_list(gameweek=gameweek, collection=collection)
+
+    @staticmethod
+    def raw_news(news_id: int) -> dict:
+        """Get full raw article by ID (as dict)."""
+        return asdict(News.get_one(id=news_id))
+
+    @staticmethod
+    def raw_news_by_gameweek(gameweek: int) -> list[dict]:
+        """Get all raw articles for a gameweek (as dicts)."""
+        return [asdict(n) for n in News.get_list(gameweek=gameweek)]
+
+    # --- News Facts ---
+
+    @staticmethod
+    def news_facts_by_player(player_id: int, gameweek: int | None = None) -> list[NewsFact]:
+        """Get all facts for a player, optionally filtered by gameweek."""
+        if gameweek is not None:
+            return NewsFacts.get_list(player_id=player_id, next_gameweek=gameweek)
+        return NewsFacts.get_list(player_id=player_id)
+
+    @staticmethod
+    def news_facts_by_gameweek(gameweek: int) -> list[NewsFact]:
+        """Get all facts relevant to a gameweek."""
+        return NewsFacts.get_list(next_gameweek=gameweek)

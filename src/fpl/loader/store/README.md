@@ -18,6 +18,7 @@ Manages timestamped JSON snapshots for FPL data resources. Provides a single-sna
   - `load_latest()`: Loads the latest snapshot JSON from disk.
   - `write(body, dt, delete_older)`: Writes new snapshot and optionally removes older ones.
   - `get_or_fetch(freshness, fetch_fn)`: Async helper that loads from cache if fresh, otherwise fetches and persists.
+  - `discover_stores(dir_name)`: Class method that scans a directory for timestamped JSON files and returns a list of `JsonSnapshotStore` instances, one per unique base name found. Fails loudly if any file doesn't match the expected format.
 
 # Data/Control Flow
 1. **Snapshot discovery**: `list_all()` scans the directory for files matching `<base_name>_<timestamp>.json`, parses timestamps, and returns sorted list.

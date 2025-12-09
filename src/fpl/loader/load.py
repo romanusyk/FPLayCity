@@ -27,20 +27,16 @@ from src.fpl.loader.convert import (
     fixture_json_to_fixture,
     future_fixture_to_player_fixture,
     history_entry_to_player_fixture,
-    news_stored_json_to_model,
     team_json_to_team,
 )
+from src.fpl.loader.news.pl import list_saved_news
+from src.fpl.loader.news.validate import list_saved_facts
 from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
-from src.fpl.models.immutable import Fixtures, Gameweeks, PlayerFixtures, Players, Teams
+from src.fpl.loader.utils import Season
+from src.fpl.models.immutable import Fixtures, Gameweeks, News, NewsFacts, PlayerFixtures, Players, Teams
 
 BASE_URL = "https://fantasy.premierleague.com/api/"
 NEXT_GAMEWEEK = 15
-
-
-class Season:
-
-    s2425 = '2024-2025'
-    s2526 = '2025-2026'
 
 
 async def fetch_json(client: AsyncClient, url_path: str, sleep_sec: float = 0.5) -> dict:
@@ -161,25 +157,21 @@ async def bootstrap(client: AsyncClient):
     
     # Load news articles from disk for the next gameweek
     # Only load "fpl_scout" collection
-    try:
-        from src.fpl.loader.news.pl import list_saved_news
-        news_items = list_saved_news(
-            collection="fpl_scout",
-            gameweek=NEXT_GAMEWEEK,
-            include_body=True,
-            season=season,
-        )
-        # Populate News collection from loaded items
-        from src.fpl.models.immutable import News as NewsCollection
-        
-        for item in news_items:
-            # Convert stored JSON to NewsModel using converter
-            news_model = news_stored_json_to_model(
-                item,
-                default_gameweek=NEXT_GAMEWEEK,
-                default_collection="fpl_scout",
-            )
-            NewsCollection.add(news_model)
-    except FileNotFoundError:
-        # No news directory or no articles for this gameweek - this is fine
-        pass
+    news_items = list_saved_news(
+        collection="fpl_scout",
+        gameweek=NEXT_GAMEWEEK,
+        include_body=True,
+        season=season,
+    )
+    # Populate News collection from loaded items
+    for news_model in news_items:
+        News.add(news_model)
+
+    # Load news facts
+    news_facts = list_saved_facts(
+        season=season,
+        gameweek=NEXT_GAMEWEEK,
+        collection="fpl_scout"
+    )
+    for fact in news_facts:
+        NewsFacts.add(fact)

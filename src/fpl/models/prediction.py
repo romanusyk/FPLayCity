@@ -18,7 +18,7 @@ from functools import reduce
 import operator
 
 from src.fpl.aggregate import Aggregate
-from src.fpl.models.immutable import TeamFixture, PlayerFixture, Player, Team, Query, PlayerType
+from src.fpl.models.immutable import TeamFixture, PlayerFixture, Player, Team, Query, PlayerType, NewsFact
 from src.fpl.models.season import Season
 from src.fotmob.rotation.rotation_view import PlayerSquadRole, RivalStartHint
 
@@ -274,6 +274,14 @@ class PlayerTotalPrediction:
         if not self.season.rotation_adapter:
             return None
         return self.season.get_rival_start_hint(self.player.player_id)
+
+    @property
+    def news_facts(self) -> list[NewsFact]:
+        """Returns all available facts for this player relevant to the prediction horizon."""
+        gws = {fp.fixture.gameweek for fp in self.fixture_predictions}
+        player_id = self.fixture_predictions[0].fixture.player_id
+        all_facts = Query.news_facts_by_player(player_id)
+        return [f for f in all_facts if f.next_gameweek in gws]
 
     @property
     def a_points_breakdown(self) -> str:

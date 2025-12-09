@@ -23,10 +23,13 @@ Components:
 - IndexGroup: Container managing multiple indices of the same type
 - Collection: Main class combining items storage with fast indexed access
 """
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, Callable
 
 
 Item = TypeVar('Item')
+
+# Sentinel object to distinguish between "not provided" and "explicitly None"
+_MISSING = object()
 
 
 class BaseIndex(Generic[Item]):
@@ -38,13 +41,33 @@ class BaseIndex(Generic[Item]):
     
     Attributes:
         key_fields: Tuple of field names to index by, sorted for consistent lookup
+        _default_value: Default value to return when key is not found (or _MISSING if not set)
+        _default_factory: Callable that returns default value when key is not found (or _MISSING if not set)
     """
 
     key_fields: tuple[str, ...]
+    _default_value: object
+    _default_factory: Callable[[], object] | None | object
 
-    def __init__(self, *key_fields: str):
-        """Initialize index with specified field names."""
+    def __init__(
+        self,
+        *key_fields: str,
+        default_value: object = _MISSING,
+        default_factory: Callable[[], object] | None = _MISSING,
+    ):
+        """
+        Initialize index with specified field names.
+        
+        Args:
+            *key_fields: Field names to index by
+            default_value: Default value to return when key is not found (mutually exclusive with default_factory)
+            default_factory: Callable that returns default value when key is not found (mutually exclusive with default_value)
+        """
+        assert not (default_value is not _MISSING and default_factory is not _MISSING), \
+            "Cannot specify both default_value and default_factory"
         self.key_fields = tuple(sorted(key_fields))
+        self._default_value = default_value
+        self._default_factory = default_factory
 
     def key_value(self, item: Item) -> tuple:
         """Extract the key value tuple from an item based on key_fields."""
@@ -79,9 +102,15 @@ class SimpleIndex(BaseIndex[Item]):
     _map: dict[tuple, Item]
     allow_overwrite: bool = False
 
-    def __init__(self, *key_fields: str, allow_overwrite: bool = False):
+    def __init__(
+        self,
+        *key_fields: str,
+        allow_overwrite: bool = False,
+        default_value: object = _MISSING,
+        default_factory: Callable[[], object] | None = _MISSING,
+    ):
         """Initialize unique index with specified field names."""
-        super().__init__(*key_fields)
+        super().__init__(*key_fields, default_value=default_value, default_factory=default_factory)
         self._map = {}
         self.allow_overwrite = allow_overwrite
 
@@ -95,6 +124,12 @@ class SimpleIndex(BaseIndex[Item]):
     def get(self, **keys) -> Item:
         """Retrieve the single item matching the key values."""
         key_values = tuple(keys[field] for field in self.key_fields)
+        if key_values not in self._map:
+            if self._default_factory is not _MISSING:
+                return self._default_factory()
+            if self._default_value is not _MISSING:
+                return self._default_value
+            raise KeyError(f"Key {key_values} not found")
         return self._map[key_values]
 
 
@@ -117,9 +152,14 @@ class ListIndex(BaseIndex[Item]):
 
     _map: dict[tuple, list[Item]]
 
-    def __init__(self, *key_fields: str):
+    def __init__(
+        self,
+        *key_fields: str,
+        default_value: object = _MISSING,
+        default_factory: Callable[[], object] | None = _MISSING,
+    ):
         """Initialize non-unique index with specified field names."""
-        super().__init__(*key_fields)
+        super().__init__(*key_fields, default_value=default_value, default_factory=default_factory)
         self._map = {}
 
     def add(self, item: Item) -> None:
@@ -132,6 +172,12 @@ class ListIndex(BaseIndex[Item]):
     def get(self, **keys) -> list[Item]:
         """Retrieve the list of all items matching the key values."""
         key_values = tuple(keys[field] for field in self.key_fields)
+        if key_values not in self._map:
+            if self._default_factory is not _MISSING:
+                return self._default_factory()
+            if self._default_value is not _MISSING:
+                return self._default_value
+            raise KeyError(f"Key {key_values} not found")
         return self._map[key_values]
 
 
