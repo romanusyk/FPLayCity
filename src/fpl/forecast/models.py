@@ -27,9 +27,11 @@ Player-level models (predict individual player performances):
 - PlayerPointsFormNaiveModel: Simple average of recent points
 - PlayerPointsFormModel: Recent points scaled by team difficulty
 """
+from dataclasses import dataclass
 from src.fpl.aggregate import Aggregate, swa, wa
-from src.fpl.models.immutable import Fixture, PlayerFixture, Query
+from src.fpl.models.immutable import Fixture, TeamFixture, Metric, PlayerFixture, Query
 from src.fpl.models.season import Season
+from src.fpl.models.stats import StatsQuery
 
 
 class FixtureModel:
@@ -351,3 +353,65 @@ class PlayerPointsFormModel(PlayerFixtureModel):
         team_scale = self.team_pts_model.scale_for_team(fixture.team_id, fixture.fixture)
         player_pts = self.season.player_stats[fixture.player_id].last(self.last_n_weeks, 'pts')
         return Aggregate(player_pts.p * team_scale, 1)
+
+
+@dataclass
+class SimpleModelResponse:
+
+    metric: Metric
+    history_gws: int
+    next_gw: int
+    target_gw: int
+    metric_exc: float
+    metric_exp: float
+
+
+class TeamSimpleModel:
+
+    def predict(self, fixture: TeamFixture, metric: Metric, history_gws: int, next_gw: int) -> SimpleModelResponse:
+        team_w = StatsQuery.team_w(metric, fixture.team_id, next_gw - history_gws, next_gw - 1)
+        total_avg = StatsQuery.team_w(metric, fixture.team_id, next_gw - history_gws, next_gw - 1, avg=True).p
+        target_avg = StatsQuery.team_fixture_avg(metric, fixture)
+        metric_exc = (team_w.total - total_avg) / team_w.count if team_w.count else 0.
+        metric_exp = target_avg.p + metric_exc
+        return SimpleModelResponse(
+            metric=metric,
+            history_gws=history_gws,
+            next_gw=next_gw,
+            target_gw=fixture.gameweek,
+            metric_exc=metric_exc,
+            metric_exp=metric_exp,
+        )
+
+class PlayerSimpleModel:
+
+    def predict(self, fixture: PlayerFixture, metric: Metric, history_gws: int, next_gw: int) -> SimpleModelResponse:
+        player_w = StatsQuery.player_w(metric, fixture.player_id, next_gw - history_gws, next_gw - 1)
+        total_avg = StatsQuery.player_w(metric, fixture.player_id, next_gw - history_gws, next_gw - 1, avg=True).p
+        target_avg = StatsQuery.player_fixture_avg(metric, fixture)
+        metric_exc = (player_w.total - total_avg) / player_w.count if player_w.count else 0.
+        metric_exp = target_avg.p + metric_exc
+        return SimpleModelResponse(
+            metric=metric,
+            history_gws=history_gws,
+            next_gw=next_gw,
+            target_gw=fixture.gameweek,
+            metric_exc=metric_exc,
+            metric_exp=metric_exp,
+        )
+
+
+class PlayerCSModel:
+
+    def predict(self, fixture: PlayerFixture, team_egc_response: SimpleModelResponse, history_gws: int, next_gw: int) -> SimpleModelResponse:
+        player_mp = StatsQuery.player_w(Metric.MP, fixture.player_id, next_gw - history_gws, next_gw - 1)
+        mp_scale = min(1., player_mp.p / 60.)
+        cs_exp = max(0., 1. - team_egc_response.metric_exp) * mp_scale
+        return SimpleModelResponse(
+            metric=Metric.CS,
+            history_gws=history_gws,
+            next_gw=next_gw,
+            target_gw=fixture.gameweek,
+            metric_exc=team_egc_response.metric_exc,
+            metric_exp=cs_exp,
+        )

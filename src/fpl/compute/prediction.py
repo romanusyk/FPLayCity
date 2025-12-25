@@ -12,7 +12,7 @@ Pipeline:
 from src.fpl.compute.base import LazyNode
 from src.fotmob.rotation.fotmob_adapter import FotmobAdapter
 from src.fpl.models.season import Season
-from src.fpl.models.immutable import Query
+from src.fpl.models.immutable import Metric, Query
 from src.fpl.models.prediction import (
     GameweekPrediction,
     GameweekPredictions,
@@ -28,6 +28,10 @@ from src.fpl.forecast.models import (
     PlayerXGSimpleModel,
     PlayerXASimpleModel,
     PlayerDCSimpleModel,
+    TeamSimpleModel,
+    PlayerSimpleModel,
+    PlayerCSModel,
+    SimpleModelResponse,
 )
 
 
@@ -96,13 +100,24 @@ class GameweekPredictionNode(LazyNode[GameweekPrediction]):
         player_xa_model = PlayerXASimpleModel(season, xa_model, min_history_gws)
         player_dc_model = PlayerDCSimpleModel(season, dc_model, min_history_gws)
 
+        team_simple_model = TeamSimpleModel()
+        player_simple_model = PlayerSimpleModel()
+        player_cs_simple_model = PlayerCSModel()
+
         gw_prediction = GameweekPrediction(gameweek=target_gameweek)
 
         fixtures = Query.fixtures_by_gameweek(target_gameweek)
         for fixture in fixtures:
             home_cs, away_cs = cs_model.predict(fixture)
-            gw_prediction.add_team_fixture_prediction(TeamFixturePrediction(fixture.home, home_cs))
-            gw_prediction.add_team_fixture_prediction(TeamFixturePrediction(fixture.away, away_cs))
+            team_egc = {}
+            for tf, cs_prediction in [(fixture.home, home_cs), (fixture.away, away_cs)]:
+                metrics_exp = {
+                    metric: team_simple_model.predict(tf, metric, min_history_gws, next_gameweek)
+                    for metric in [Metric.XGC, Metric.XG, Metric.CS]
+                }
+                gw_prediction.add_team_fixture_prediction(TeamFixturePrediction(tf, cs_prediction, metrics_exp))
+                team_egc[tf.side] = metrics_exp[Metric.XGC]
+
             for pf in Query.player_fixtures_by_fixture(fixture.fixture_id):
                 cs_prediction = player_cs_model.predict(pf)
                 xg_prediction = player_xg_model.predict(pf)
@@ -115,6 +130,12 @@ class GameweekPredictionNode(LazyNode[GameweekPrediction]):
                         xg_prediction=xg_prediction,
                         xa_prediction=xa_prediction,
                         dc_prediction=dc_prediction,
+                        metrics_exp={
+                            Metric.XG: player_simple_model.predict(pf, Metric.XG, min_history_gws, next_gameweek),
+                            Metric.XA: player_simple_model.predict(pf, Metric.XA, min_history_gws, next_gameweek),
+                            Metric.DC: player_simple_model.predict(pf, Metric.DC, min_history_gws, next_gameweek),
+                            Metric.CS: player_cs_simple_model.predict(pf, team_egc[pf.side], min_history_gws, next_gameweek),
+                        },
                     )
                 )
 
@@ -155,7 +176,7 @@ class GameweekPredictionsNode(LazyNode[GameweekPredictions]):
             )
             gw_predictions.append(gw_pred)
         
-        return GameweekPredictions(self.season(next_gameweek=next_gameweek), gw_predictions, min_history_gws)
+        return GameweekPredictions(self.season(next_gameweek=next_gameweek), gw_predictions, next_gameweek, min_history_gws)
 
 
 class PredictionPipeline:

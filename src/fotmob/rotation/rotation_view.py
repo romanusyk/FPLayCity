@@ -79,6 +79,7 @@ class PlayerSquadRole:
 
 @dataclass
 class RivalSubDetail:
+    fpl_player_id: int
     fotmob_player_id: int
     fotmob_name: str
     sub_count: int

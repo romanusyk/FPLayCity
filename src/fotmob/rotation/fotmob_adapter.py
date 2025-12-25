@@ -356,7 +356,7 @@ class FotmobAdapter:
     def get_rival_start_hint(self, fpl_player_id: int, max_gameweek: int | None) -> RivalStartHint:
         """Return rival substitution insights for a given FPL player id."""
         fotmob_player_id = self.get_fotmob_player_id(fpl_player_id)
-        return self._rotation_analyzer.get_rival_start_hint(fotmob_player_id, max_gameweek)
+        return self._rotation_analyzer.get_rival_start_hint(fotmob_player_id, self._fotmob_to_fpl, max_gameweek)
 
 
 

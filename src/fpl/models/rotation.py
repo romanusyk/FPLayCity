@@ -110,7 +110,7 @@ class RotationAnalyzer:
             first_team_threshold=self._config.first_team_start_ratio,
         )
 
-    def get_rival_start_hint(self, fotmob_player_id: int, max_gameweek: int | None) -> RivalStartHint:
+    def get_rival_start_hint(self, fotmob_player_id: int, fotmob_to_fpl_mapping: dict[int, int], max_gameweek: int | None) -> RivalStartHint:
         """Summarize which rivals frequently replace the player within the configured window."""
         rival_details: list[RivalSubDetail] = []
         for rival_id, events in self._rival_events.get(fotmob_player_id, {}).items():
@@ -128,6 +128,7 @@ class RotationAnalyzer:
                 )
             rival_details.append(
                 RivalSubDetail(
+                    fpl_player_id=fotmob_to_fpl_mapping[rival_id],
                     fotmob_player_id=rival_id,
                     fotmob_name=self._player_names[rival_id],
                     sub_count=len(matches),

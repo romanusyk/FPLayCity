@@ -1,4 +1,5 @@
 """
+# todo: fix this
 Main execution script for FPL predictions using lazy computation pipeline.
 
 Process:
@@ -17,88 +18,112 @@ Key features:
 Run with: uv run -m src.fpl.main
 """
 import logging
+import os
+
+from dotenv import load_dotenv
 from asyncio import new_event_loop
 
-from httpx import AsyncClient
-
-from src.fpl.loader.load import bootstrap
-from src.fotmob.load import load_saved_match_details
 from src.fpl.compute.prediction import PredictionPipeline
-from src.fotmob.rotation.fotmob_adapter import FotmobAdapter, build_gameweek_mapper
-from src.fotmob.rotation.rotation_config import RotationConfig
-from src.fpl.models.immutable import PlayerType, Query
+from src.fpl.models.immutable import Metric, PlayerType, Query
 from src.fpl.models.season import Season
+from src.fpl.models.stats import StatsQuery
+from src.fpl.models.prediction import GameweekPredictions
 from src.fpl.forecast.models import SimplePtsModel, PlayerPointsFormModel
+from src.fpl.core import build_pipeline
+from src.fpl.views import PlayerPredictionView, TeamPredictionView
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-class XG_BY_FDR:
-
-    season_24_25_up_to_gw_33 = {
-        1: 1.86, # was added in the end of the season
-        2: 1.86,
-        3: 1.39,
-        4: 1.18,
-        5: 0.89,
-    }
-
-    main = season_24_25_up_to_gw_33
-
-
-async def main(client: AsyncClient):
-    logging.info("Loading FPL data...")
-    await bootstrap(client)
-    
-    # Read saved FotMob lineups/match details from disk (no fetching here)
-    season_dir = "2025-2026"
-    match_details = load_saved_match_details(season=season_dir)
-    total_matches = sum(len(v) for v in match_details.values())
-    logging.info(f"Loaded {total_matches} match lineups across {len(match_details)} teams from data/{season_dir}/lineups")
-    for team_name, matches in list(match_details.items())[:5]:
-        sample_ids = [m.match_id for m in matches[:3]]
-        logging.info(f"- {team_name}: {len(matches)} matches (first 3 ids: {sample_ids})")
-    
-    rotation_config = RotationConfig()
-    gw_mapper = build_gameweek_mapper(Query.all_gameweeks())
-    fotmob_adapter = FotmobAdapter(match_details, rotation_config, gw_mapper)
-
-    next_gameweek = 15
-    min_history_gws = 5
-    offset = 0
-    horizon = 5
-    target_gameweeks = [next_gameweek + offset, next_gameweek + offset + horizon]
-    
-    logging.info("Creating lazy computation pipeline...")
-    pipeline = PredictionPipeline(rotation_adapter=fotmob_adapter)
-    
+def predict(
+        pipeline: PredictionPipeline,
+        next_gameweek: int,
+        horizon: int,
+        min_history_gws: int = 3,
+        offset: int = 0,
+) -> GameweekPredictions:
+    target_gameweeks = [next_gameweek + offset + i for i in range(horizon)]
     logging.info(f"\n=== Predictions for GWs {target_gameweeks} ===")
-    predictions = pipeline.predict(
+    return pipeline.predict(
         next_gameweek=next_gameweek,
         target_gameweeks=target_gameweeks,
-        min_history_gws=min_history_gws
+        min_history_gws=min_history_gws,
     )
-    
-    logging.info(f"Cache info: {pipeline.cache_info}")
-    logging.info(f"\nTop 10 players by predicted points:")
-    for i, player in enumerate(predictions.players_total_points_desc[:10], 1):
-        logging.info(f"{i}. {player}")
-        rivals = player.rotation_rivals
-        if rivals and rivals.rivals_sorted:
-            rival_lines = []
-            for detail in rivals.rivals_sorted[:3]:
-                try:
-                    fpl_rival_id = fotmob_adapter.get_fpl_player_id_from_fotmob(detail.fotmob_player_id)
-                    rival_name = Query.player(fpl_rival_id).web_name
-                except KeyError:
-                    rival_name = f"fotmob:{detail.fotmob_player_id}"
-                rival_lines.append(f"{rival_name} ({detail.sub_count} subs)")
-            logging.info(f"    Rivals: {', '.join(rival_lines)}")
-    
-    logging.info(f"\nTop 5 teams by predicted clean sheets:")
-    for i, team_prediction in enumerate(predictions.teams_total_cs_desc[:5], 1):
-        logging.info(f"{i}. {team_prediction.team}: {team_prediction.cs_prediction} CS predicted")
-    
+
+
+def get_my_fpl_players(
+        predictions: GameweekPredictions,
+        next_gameweek: int,
+) -> list[PlayerPredictionView]:
+    return [
+        PlayerPredictionView.build(p, next_gameweek=next_gameweek, history_gws=predictions.min_history_gws)
+        for p in predictions.my_fpl_players()
+    ]
+
+
+def get_available_draft_players(
+        predictions: GameweekPredictions,
+        next_gameweek: int,
+        position: PlayerType | None = None,
+) -> list[PlayerPredictionView]:
+    return [
+        PlayerPredictionView.build(p, next_gameweek=next_gameweek, history_gws=predictions.min_history_gws)
+        for p in predictions.top_draft_players(position=position)
+        if position is None or p.player.player_type == position
+    ]
+
+
+def top_players_new(
+        predictions: GameweekPredictions,
+        next_gameweek: int,
+        position: PlayerType | None = None,
+) -> list[PlayerPredictionView]:
+    return [
+        PlayerPredictionView.build(p, next_gameweek=next_gameweek, history_gws=predictions.min_history_gws)
+        for p in predictions.players_total_predictions(position=position)
+    ]
+
+
+def top_teams_old(
+        predictions: GameweekPredictions,
+        next_gameweek: int,
+) -> list[TeamPredictionView]:
+    return [
+        TeamPredictionView.build(p, next_gameweek=next_gameweek, history_gws=predictions.min_history_gws)
+        for p in predictions.teams_total_cs_desc
+    ]
+
+
+def top_teams_new(
+        predictions: GameweekPredictions,
+        next_gameweek: int,
+) -> list[TeamPredictionView]:
+    return [
+        TeamPredictionView.build(p, next_gameweek=next_gameweek, history_gws=predictions.min_history_gws)
+        for p in predictions.teams_xgc_exp_asc
+    ]
+
+
+async def main():
+    load_dotenv()
+    next_gameweek = int(os.getenv("NEXT_GAMEWEEK"))
+    if not next_gameweek:
+        raise ValueError("NEXT_GAMEWEEK environment variable is not set")
+    min_history_gws = 3
+
+    pipeline = await build_pipeline(next_gameweek)
+
+    predictions = predict(pipeline, next_gameweek, 3, min_history_gws)
+    all_players = top_players_new(predictions, next_gameweek)
+    my_fpl_players = get_my_fpl_players(predictions, next_gameweek)
+    available_draft_gkps = get_available_draft_players(predictions, next_gameweek, PlayerType.GKP)
+    available_draft_defs = get_available_draft_players(predictions, next_gameweek, PlayerType.DEF)
+    available_draft_mids = get_available_draft_players(predictions, next_gameweek, PlayerType.MID)
+    available_draft_fwds = get_available_draft_players(predictions, next_gameweek, PlayerType.FWD)
+    teams_old = top_teams_old(predictions, next_gameweek)
+    teams_new = top_teams_new(predictions, next_gameweek)
+
     logging.info(f"\n=== Backtesting from GW {min_history_gws + 1} to {next_gameweek - 1} ===")
     
     total_points = 0
@@ -181,5 +206,4 @@ async def main(client: AsyncClient):
 
 
 if __name__ == '__main__':
-    client = AsyncClient()
-    new_event_loop().run_until_complete(main(client))
+    new_event_loop().run_until_complete(main())

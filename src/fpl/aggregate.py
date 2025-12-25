@@ -21,6 +21,12 @@ class Aggregate:
     def copy(self, scale: float = 1.) -> 'Aggregate':
         return type(self)(self.total * scale, self.count * scale)
 
+    def __eq__(self, other: 'Aggregate') -> bool:
+        return self.total == other.total and self.count == other.count
+
+    def __ne__(self, other: 'Aggregate') -> bool:
+        return not self == other
+
     def __add__(self, other: 'Aggregate') -> 'Aggregate':
         return type(self)(self.total + other.total, self.count + other.count)
 

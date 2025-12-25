@@ -15,22 +15,27 @@ Classes:
 """
 import dataclasses
 from functools import reduce
+from typing import Callable
 import operator
 
 from src.fpl.aggregate import Aggregate
-from src.fpl.models.immutable import TeamFixture, PlayerFixture, Player, Team, Query, PlayerType, NewsFact
+from src.fpl.models.immutable import Metric, TeamFixture, PlayerFixture, Player, Team, Query, PlayerType, NewsFact
 from src.fpl.models.season import Season
+from src.fpl.forecast.models import SimpleModelResponse
 from src.fotmob.rotation.rotation_view import PlayerSquadRole, RivalStartHint
+from src.fpl.models.red_flags import build_red_flags, PlayerRegFlag
 
 
 class TeamFixturePrediction:
 
     fixture: TeamFixture
     cs_prediction: Aggregate
+    metrics_exp: dict[Metric, SimpleModelResponse]
 
-    def __init__(self, fixture: TeamFixture, cs_prediction: Aggregate):
+    def __init__(self, fixture: TeamFixture, cs_prediction: Aggregate, metrics_exp: dict[Metric, SimpleModelResponse] | None = None):
         self.fixture = fixture
         self.cs_prediction = cs_prediction
+        self.metrics_exp = metrics_exp or {}
 
     def __repr__(self):
         return f'{self.fixture.team}={self.cs_prediction} ({self.fixture.opponent_team})'
@@ -43,6 +48,7 @@ class PlayerFixturePrediction:
     xg_prediction: Aggregate
     xa_prediction: Aggregate
     dc_prediction: Aggregate
+    metrics_exp: dict[Metric, SimpleModelResponse]
 
     def __init__(
             self,
@@ -51,12 +57,14 @@ class PlayerFixturePrediction:
             xg_prediction: Aggregate,
             xa_prediction: Aggregate,
             dc_prediction: Aggregate,
+            metrics_exp: dict[Metric, SimpleModelResponse] | None = None,
     ):
         self.fixture = fixture
         self.cs_prediction = cs_prediction
         self.xg_prediction = xg_prediction
         self.xa_prediction = xa_prediction
         self.dc_prediction = dc_prediction
+        self.metrics_exp = metrics_exp or {}
 
     def __repr__(self):
         return (
@@ -66,80 +74,6 @@ class PlayerFixturePrediction:
             f'+ {self.dc_prediction.p:.1f} DC '
             f'+ {self.cs_prediction.p:.1f} CS'
         )
-
-
-@dataclasses.dataclass
-class PlayerRegFlag:
-
-    importance: float = 0.
-    description: str = 'Reg flag'
-
-    @classmethod
-    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
-        raise NotImplementedError
-
-    def __repr__(self):
-        return f'{self.description} ({self.importance:.1f})'
-
-
-@dataclasses.dataclass
-class MissedLastGame(PlayerRegFlag):
-
-    importance: float = 1.0
-    description: str = '0 MP'
-
-    @classmethod
-    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
-        fixtures = season.player_stats[player_id].last_n_fixtures(1)
-        return cls() if len(fixtures) > 0 and fixtures[-1].minutes == 0 else None
-
-    def __repr__(self):
-        return f'{self.description}'
-
-
-@dataclasses.dataclass
-class ShortLastGame(PlayerRegFlag):
-    importance: float = 0.7
-    description: str = '<60 MP'
-
-    @classmethod
-    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
-        fixtures = season.player_stats[player_id].last_n_fixtures(1)
-        return cls() if len(fixtures) > 0 and fixtures[-1].minutes < 60 else None
-
-    def __repr__(self):
-        return f'{self.description}'
-
-
-@dataclasses.dataclass
-class Unavailable(PlayerRegFlag):
-    importance: float = 1.0
-    description: str = 'I'
-
-    @classmethod
-    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
-        chance = Query.player(player_id).chance_of_playing_next_round
-        if chance is None or chance == 100:
-            return None
-        importance = (100 - chance) / 100.0
-        return cls(importance=importance)
-
-    def __repr__(self):
-        return f'{self.description} {int(self.importance * 100):d}%'
-
-
-@dataclasses.dataclass
-class NotStartedLastGame(PlayerRegFlag):
-    importance: float = 0.7
-    description: str = 'B'
-
-    @classmethod
-    def check(cls, season: Season, player_id: int) -> 'PlayerRegFlag | None':
-        fixtures = season.player_stats[player_id].last_n_fixtures(1)
-        return cls() if len(fixtures) > 0 and fixtures[-1].starts == 0 else None
-
-    def __repr__(self):
-        return f'{self.description}'
 
 
 class TeamTotalPrediction:
@@ -161,19 +95,17 @@ class TeamTotalPrediction:
         return reduce(operator.add, aggregates)
 
     @property
+    def xgc_exp(self) -> Aggregate:
+        return self._agg([Aggregate(fp.metrics_exp[Metric.XGC].metric_exp, 1) for fp in self.fixture_predictions])
+
+    @property
     def cs_prediction(self) -> Aggregate:
         return self._agg([fp.cs_prediction for fp in self.fixture_predictions])
-
 
 
 class PlayerTotalPrediction:
 
     fixture_predictions: list[PlayerFixturePrediction]
-    all_red_flags: list[list[type[PlayerRegFlag]]] = [
-        [Unavailable],
-        [NotStartedLastGame],
-        [MissedLastGame, ShortLastGame],
-    ]
 
     def __init__(
             self,
@@ -192,46 +124,90 @@ class PlayerTotalPrediction:
     @staticmethod
     def _agg(aggregates: list[Aggregate]):
         return reduce(operator.add, aggregates)
+    
+    @property
+    def cs_exp(self) -> Aggregate:
+        return self._agg([Aggregate(fp.metrics_exp[Metric.CS].metric_exp, 1) for fp in self.fixture_predictions])
 
     @property
     def cs_prediction(self) -> Aggregate:
         return self._agg([fp.cs_prediction for fp in self.fixture_predictions])
 
     @property
+    def xg_exp(self) -> Aggregate:
+        return self._agg([Aggregate(fp.metrics_exp[Metric.XG].metric_exp, 1) for fp in self.fixture_predictions])
+
+    @property
     def xg_prediction(self) -> Aggregate:
         return self._agg([fp.xg_prediction for fp in self.fixture_predictions])
+
+    @property
+    def xa_exp(self) -> Aggregate:
+        return self._agg([Aggregate(fp.metrics_exp[Metric.XA].metric_exp, 1) for fp in self.fixture_predictions])
 
     @property
     def xa_prediction(self) -> Aggregate:
         return self._agg([fp.xa_prediction for fp in self.fixture_predictions])
 
     @property
+    def dc_exp(self) -> Aggregate:
+        return self._agg([Aggregate(fp.metrics_exp[Metric.DC].metric_exp, 1) for fp in self.fixture_predictions])
+
+    @property
     def dc_prediction(self) -> Aggregate:
         return self._agg([fp.dc_prediction for fp in self.fixture_predictions])
 
     @property
+    def cs_exp_points(self) -> float:
+        return self.cs_exp.p * self.player.clean_sheet_points
+    
+    @property
     def cs_predicted_points(self) -> float:
         return self.cs_prediction.p * self.player.clean_sheet_points
+
+    @property
+    def xg_exp_points(self) -> float:
+        return self.xg_exp.p * self.player.goal_points
 
     @property
     def xg_predicted_points(self) -> float:
         return self.xg_prediction.p * self.player.goal_points
 
     @property
+    def xa_exp_points(self) -> float:
+        return self.xa_exp.p * self.player.assist_points
+
+    @property
     def xa_predicted_points(self) -> float:
         return self.xa_prediction.p * self.player.assist_points
+
+    @property
+    def dc_exp_points(self) -> float:
+        return self.dc_exp.p * self.player.dc_points
 
     @property
     def dc_predicted_points(self) -> float:
         return self.dc_prediction.p * self.player.dc_points
 
     @property
+    def total_exp_points(self) -> float:
+        return self.cs_exp_points + self.xg_exp_points + self.xa_exp_points + self.dc_exp_points
+
+    @property
     def total_predicted_points(self) -> float:
         return self.cs_predicted_points + self.xg_predicted_points + self.xa_predicted_points + self.dc_predicted_points
 
     @property
+    def total_exp_points_per_value(self) -> float:
+        return self.total_exp_points / self.player.now_cost
+
+    @property
     def total_predicted_points_per_value(self) -> float:
         return self.total_predicted_points / self.player.now_cost
+
+    @property
+    def million_per_total_exp_points(self) -> float:
+        return self.player.now_cost / self.total_exp_points if self.total_exp_points else 999.
 
     @property
     def million_per_total_predicted_points(self) -> float:
@@ -252,26 +228,17 @@ class PlayerTotalPrediction:
 
     @property
     def red_flags(self) -> list[PlayerRegFlag]:
-        result = []
-        for flags in self.all_red_flags:
-            for flag_cls in flags:
-                if flag := flag_cls.check(
-                    self.season,
-                    self.fixture_predictions[0].fixture.player_id,
-                ):
-                    result.append(flag)
-                    break
-        return result
+        return build_red_flags(self.player.player_id)
 
     @property
     def squad_role(self) -> PlayerSquadRole | None:
-        if not self.season.rotation_adapter:
+        if not self.season.rotation_adapter or self.player.minutes == 0:
             return None
         return self.season.get_player_squad_role(self.player.player_id)
 
     @property
     def rotation_rivals(self) -> RivalStartHint | None:
-        if not self.season.rotation_adapter:
+        if not self.season.rotation_adapter or self.player.minutes == 0:
             return None
         return self.season.get_rival_start_hint(self.player.player_id)
 
@@ -348,9 +315,10 @@ class GameweekPredictions:
     pos: PlayerType | None
     team_only: bool
 
-    def __init__(self, season: Season, gameweek_predictions: list[GameweekPrediction], min_history_gws: int):
+    def __init__(self, season: Season, gameweek_predictions: list[GameweekPrediction], next_gameweek: int, min_history_gws: int):
         self.season = season
         self.gameweek_predictions = gameweek_predictions
+        self.next_gameweek = next_gameweek
         self.min_history_gws = min_history_gws
         self.pos = None
         self.team_only = False
@@ -362,28 +330,24 @@ class GameweekPredictions:
         ]
 
     @property
+    def teams_xgc_exp_asc(self) -> list[TeamTotalPrediction]:
+        return sorted(self.teams_total_predictions, key=lambda p: p.xgc_exp.p)
+
+    @property
     def teams_total_cs_desc(self) -> list[TeamTotalPrediction]:
         return sorted(self.teams_total_predictions, key=lambda p: -p.cs_prediction.p)
 
     @property
-    def players_total_cs_desc(self) -> list[PlayerTotalPrediction]:
-        return sorted(self.players_total_predictions, key=lambda p: -p.cs_predicted_points)
+    def players_points_exp_desc(self) -> list[PlayerTotalPrediction]:
+        return sorted(self.players_total_predictions, key=lambda p: -p.total_exp_points)
 
-    @property
-    def players_total_xg_desc(self) -> list[PlayerTotalPrediction]:
-        return sorted(self.players_total_predictions, key=lambda p: -p.xg_predicted_points)
-
-    @property
-    def players_total_xa_desc(self) -> list[PlayerTotalPrediction]:
-        return sorted(self.players_total_predictions, key=lambda p: -p.xa_predicted_points)
-
-    @property
-    def players_total_dc_desc(self) -> list[PlayerTotalPrediction]:
-        return sorted(self.players_total_predictions, key=lambda p: -p.dc_predicted_points)
-    
     @property
     def players_total_points_desc(self) -> list[PlayerTotalPrediction]:
         return sorted(self.players_total_predictions, key=lambda p: -p.total_predicted_points)
+
+    @property
+    def players_points_exp_per_value_desc(self) -> list[PlayerTotalPrediction]:
+        return sorted(self.players_total_predictions, key=lambda p: p.million_per_total_exp_points)
 
     @property
     def players_total_points_per_value_desc(self) -> list[PlayerTotalPrediction]:
@@ -398,17 +362,51 @@ class GameweekPredictions:
             ))
         return total_predictions
 
-    @property
-    def players_total_predictions(self) -> list[PlayerTotalPrediction]:
+    def my_fpl_players(self, sort_key: Callable[[PlayerTotalPrediction], float] = lambda p: p.million_per_total_exp_points) -> list[PlayerTotalPrediction]:
+        return self.players_total_predictions(player_whitelist=Query.my_fpl_presence_ids(self.next_gameweek - 1), sort_key=sort_key)
+
+    def top_fpl_players(
+        self,
+        position: PlayerType | None = None,
+        sort_key: Callable[[PlayerTotalPrediction], float] = lambda p: p.million_per_total_exp_points,
+    ) -> list[PlayerTotalPrediction]:
+        return self.players_total_predictions(
+            position=position,
+            sort_key=sort_key,
+        )
+
+    def my_draft_players(self, sort_key: Callable[[PlayerTotalPrediction], float] = lambda p: -p.total_exp_points) -> list[PlayerTotalPrediction]:
+        return self.players_total_predictions(player_whitelist=Query.my_draft_presence_ids(self.next_gameweek - 1), sort_key=sort_key)
+
+    def top_draft_players(
+        self,
+        position: PlayerType | None = None,
+        sort_key: Callable[[PlayerTotalPrediction], float] = lambda p: -p.total_exp_points,
+    ) -> list[PlayerTotalPrediction]:
+        return self.players_total_predictions(
+            position=position,
+            player_blacklist=Query.all_draft_presence_ids(self.next_gameweek - 1),
+            sort_key=sort_key,
+        )
+
+    def players_total_predictions(
+        self,
+        position: PlayerType | None = None,
+        player_whitelist: set[int] | None = None,
+        player_blacklist: set[int] | None = None,
+        sort_key: Callable[[PlayerTotalPrediction], float] = lambda p: -p.total_exp_points,
+    ) -> list[PlayerTotalPrediction]:
         total_predictions = []
         for player_id in self.gameweek_predictions[0].player_fixture_predictions:
-            if self.pos is not None and Query.player(player_id).player_type != self.pos:
+            if position is not None and Query.player(player_id).player_type != position:
                 continue
-            if self.team_only and player_id not in self.my_team:
+            if player_whitelist and player_id not in player_whitelist:
+                continue
+            if player_blacklist and player_id in player_blacklist:
                 continue
             total_predictions.append(PlayerTotalPrediction(
                 self.season,
                 [gp.player_fixture_predictions[player_id] for gp in self.gameweek_predictions],
                 min_history_gws=self.min_history_gws,
             ))
-        return total_predictions
+        return sorted(total_predictions, key=sort_key)

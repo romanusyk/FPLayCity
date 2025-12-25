@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from src.fpl.const import GameMode
 from src.fpl.models.immutable import (
     Fixture,
     Gameweek,
@@ -10,6 +11,7 @@ from src.fpl.models.immutable import (
     PlayerType,
     Team,
     TeamFixture,
+    PlayerPresence,
 )
 
 
@@ -37,6 +39,7 @@ def team_json_to_team(row: dict) -> Team:
     """Convert a bootstrap team row into a Team dataclass."""
     return Team(
         team_id=row["id"],
+        short_name=row["short_name"],
         name=row["name"],
         strength_overall_home=row["strength_overall_home"],
         strength_overall_away=row["strength_overall_away"],
@@ -67,12 +70,14 @@ def fixture_json_to_fixture(row: dict) -> Fixture:
         fixture_id=row["id"],
         team_id=row["team_h"],
         difficulty=row["team_h_difficulty"],
+        gameweek=row["event"],
         score=row["team_h_score"],
     )
     away = TeamFixture(
         fixture_id=row["id"],
         team_id=row["team_a"],
         difficulty=row["team_a_difficulty"],
+        gameweek=row["event"],
         score=row["team_a_score"],
     )
     return Fixture(
@@ -113,6 +118,7 @@ def element_json_to_player(row: dict) -> Player:
         chance_of_playing_next_round=row["chance_of_playing_next_round"],
         chance_of_playing_this_round=row["chance_of_playing_this_round"],
         news=row["news"],
+        minutes=row["minutes"],
     )
 
 
@@ -195,3 +201,17 @@ def player_fixture_to_future_json(player_fixture: PlayerFixture) -> dict:
         "is_home": player_fixture.was_home,
     }
 
+
+def fpl_presence_json_to_player_presence(row: dict, gameweek: int, manager_id: int, is_mine: bool) -> PlayerPresence:
+    """Convert a FPL presence row into a PlayerPresence dataclass."""
+    return PlayerPresence(
+        game_mode=GameMode.fpl,
+        manager_id=manager_id,
+        is_mine=is_mine,
+        player_id=row["element"],
+        gameweek=gameweek,
+        position=row["position"],
+        is_captain=row["is_captain"],
+        is_vice_captain=row["is_vice_captain"],
+        multiplier=row["multiplier"],
+    )

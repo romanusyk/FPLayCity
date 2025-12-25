@@ -35,6 +35,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from datetime import datetime
 
+from src.fpl.const import GameMode
 from src.fpl.collection import Collection, SimpleIndex, ListIndex
 
 
@@ -42,6 +43,7 @@ from src.fpl.collection import Collection, SimpleIndex, ListIndex
 class Team:
 
     team_id: int
+    short_name: str
     name: str
     strength_overall_home: int
     strength_overall_away: int
@@ -54,12 +56,29 @@ class Team:
         return f'{self.name}'
 
 
+class Metric(Enum):
+    XGC = 'egc'
+    CS = 'cs'
+    XG = 'xg'
+    XA = 'xa'
+    DC = 'dc'
+    MP = 'mp'
+    PTS = 'pts'
+
+
+class Measurable:
+
+    def get_metric(self, metric: Metric) -> float:
+        raise NotImplementedError
+
+
 @dataclass
-class TeamFixture:
+class TeamFixture(Measurable):
 
     fixture_id: int
     team_id: int
     difficulty: int
+    gameweek: int
     score: int | None
 
     @property
@@ -71,13 +90,20 @@ class TeamFixture:
         return Teams.get_one(team_id=self.team_id)
 
     @property
+    def opponent_team_fixture(self) -> 'TeamFixture':
+        return self.fixture.away if self.team_id == self.fixture.home.team_id else self.fixture.home
+
+    @property
     def opponent_team(self) -> Team:
-        opponent_team_id = (
-            self.fixture.home.team_id
-            if self.fixture.away.team_id == self.team_id
-            else self.fixture.away.team_id
-        )
-        return Teams.get_one(team_id=opponent_team_id)
+        return self.opponent_team_fixture.team
+
+    @property
+    def side(self) -> str:
+        return 'home' if self.team_id == self.fixture.home.team_id else 'away'
+
+    @property
+    def clean_sheet(self) -> int:
+        return int(self.opponent_team_fixture.score == 0)
 
     @property
     def player_fixtures(self) -> list['PlayerFixture']:
@@ -99,6 +125,20 @@ class TeamFixture:
     def total_points(self) -> int:
         return sum([pf.total_points or 0. for pf in self.player_fixtures])
 
+    @property
+    def opponent_expected_goals(self) -> float:
+        return self.opponent_team_fixture.expected_goals
+
+    def get_metric(self, metric: Metric) -> float:
+        return {
+            Metric.XGC: self.opponent_expected_goals,
+            Metric.CS: self.clean_sheet,
+            Metric.XG: self.expected_goals,
+            Metric.XA: self.expected_assists,
+            Metric.DC: self.defensive_contribution,
+            Metric.PTS: self.total_points,
+        }[metric]
+
 
 @dataclass
 class Fixture:
@@ -108,6 +148,10 @@ class Fixture:
     gameweek: int
     home: TeamFixture
     away: TeamFixture
+
+    def get_metric(self, metric: Metric, team_id: int) -> float:
+        team_fixture = self.home if team_id == self.home.team_id else self.away
+        return team_fixture.get_metric(metric)
 
     @property
     def home_clean_sheet(self) -> int:
@@ -134,7 +178,7 @@ class Fixture:
 
 
 @dataclass
-class PlayerFixture:
+class PlayerFixture(Measurable):
 
     player_id: int
     fixture_id: int
@@ -152,6 +196,17 @@ class PlayerFixture:
     expected_goals_conceded: float | None = None
     value: int | None = None
     starts: int | None = None
+
+    def get_metric(self, metric: Metric) -> float:
+        return {
+            Metric.XGC: self.expected_goals_conceded,
+            Metric.CS: self.clean_sheets,
+            Metric.XG: self.expected_goals,
+            Metric.XA: self.expected_assists,
+            Metric.DC: self.defensive_contribution,
+            Metric.MP: self.minutes,
+            Metric.PTS: self.total_points,
+        }[metric]
 
     @property
     def side(self) -> str:
@@ -226,6 +281,7 @@ class Player:
     chance_of_playing_next_round: int
     chance_of_playing_this_round: int
     news: str
+    minutes: int
 
     @property
     def team(self) -> Team:
@@ -267,6 +323,19 @@ class Player:
     def __repr__(self):
         full_name = f'{self.first_name} {self.second_name}'.strip()
         return f'[{self.player_id}] {self.web_name or full_name} ({self.player_type.name}) - {self.team.name}'
+
+
+@dataclass
+class PlayerPresence:
+    game_mode: GameMode
+    manager_id: int
+    is_mine: bool
+    player_id: int
+    gameweek: int
+    position: int
+    is_captain: bool
+    is_vice_captain: bool
+    multiplier: int
 
 
 @dataclass
@@ -320,11 +389,15 @@ class NewsFact:
 
 Teams = Collection[Team]([SimpleIndex('team_id')])
 
+TeamFixtures = Collection[TeamFixture](
+    simple_indices=[SimpleIndex('fixture_id', 'team_id')],
+    list_indices=[ListIndex('team_id', 'gameweek')],
+)
+
 Fixtures = Collection[Fixture](
     simple_indices=[SimpleIndex('fixture_id')],
     list_indices=[ListIndex('gameweek')],
 )
-
 
 PlayerFixtures = Collection[PlayerFixture](
     simple_indices=[
@@ -337,13 +410,22 @@ PlayerFixtures = Collection[PlayerFixture](
         ListIndex('team_id'),
         ListIndex('gameweek'),
         ListIndex('team_id', 'gameweek'),
+        ListIndex('player_id', 'gameweek', default_factory=list),
     ],
 )
-
 
 Players = Collection[Player](
     simple_indices=[SimpleIndex('player_id')],
     list_indices=[ListIndex('team_id')],
+)
+
+
+PlayerPresences = Collection[PlayerPresence](
+    simple_indices=[SimpleIndex('manager_id', 'player_id', 'gameweek')],
+    list_indices=[
+        ListIndex('manager_id', 'gameweek'),
+        ListIndex('game_mode', 'is_mine', 'gameweek'),
+    ],
 )
 
 
@@ -403,7 +485,27 @@ class Query:
     def fixtures_by_gameweek(gameweek: int) -> list[Fixture]:
         """Get all fixtures in a gameweek."""
         return Fixtures.get_list(gameweek=gameweek)
-    
+
+    # --- TeamFixtures ---
+
+    @staticmethod
+    def team_fixture(fixture_id: int, team_id: int) -> TeamFixture:
+        """Get team fixture by fixture and team."""
+        return TeamFixtures.get_one(fixture_id=fixture_id, team_id=team_id)
+
+    @staticmethod
+    def team_fixtures_by_team_and_gameweek(team_id: int, gameweek: int) -> list[TeamFixture]:
+        """Get all team fixtures for a team in a specific gameweek."""
+        return TeamFixtures.get_list(team_id=team_id, gameweek=gameweek)
+
+    @staticmethod
+    def team_fixtures_by_team_and_gameweeks(team_id: int, first_gw: int, last_gw: int) -> list[TeamFixture]:
+        """Get all team fixtures for a team in a range of gameweeks."""
+        return [
+            tf for gw in range(first_gw, last_gw + 1)
+            for tf in TeamFixtures.get_list(team_id=team_id, gameweek=gw)
+        ]
+
     # --- PlayerFixtures ---
     
     @staticmethod
@@ -440,7 +542,21 @@ class Query:
     def player_fixtures_by_team_and_gameweek(team_id: int, gameweek: int) -> list[PlayerFixture]:
         """Get all player fixtures for a team in a specific gameweek."""
         return PlayerFixtures.get_list(team_id=team_id, gameweek=gameweek)
-    
+
+    @staticmethod
+    def player_fixtures_by_player_and_gameweek(player_id: int, gameweek: int) -> list[PlayerFixture]:
+        """Get all player fixtures for a player in a specific gameweek."""
+        return PlayerFixtures.get_list(player_id=player_id, gameweek=gameweek)
+
+    @staticmethod
+    def player_fixtures_by_player_and_gameweeks(player_id: int, first_gw: int, last_gw: int) -> list[PlayerFixture]:
+        """Get all player fixtures for a player in a range of gameweeks."""
+        return [
+            pf 
+            for gw in range(first_gw, last_gw + 1)
+            for pf in PlayerFixtures.get_list(player_id=player_id, gameweek=gw)
+        ]
+
     # --- Players ---
     
     @staticmethod
@@ -501,6 +617,32 @@ class Query:
             p for p in Players.items
             if name.lower() in p.web_name.lower()
         ]
+
+    # --- Player Presences ---
+
+    @staticmethod
+    def my_fpl_presence_ids(gameweek: int) -> set[int]:
+        """Get all my FPL presence player IDs for a gameweek."""
+        return {
+            pp.player_id for pp in PlayerPresences.get_list(game_mode=GameMode.fpl, is_mine=True, gameweek=gameweek)
+        }
+
+    @staticmethod
+    def my_draft_presence_ids(gameweek: int) -> set[int]:
+        """Get all my draft presence player IDs for a gameweek."""
+        return {
+            pp.player_id for pp in PlayerPresences.get_list(game_mode=GameMode.draft, is_mine=True, gameweek=gameweek)
+        }
+
+    @staticmethod
+    def all_draft_presence_ids(gameweek: int) -> set[int]:
+        """Get all draft presence player IDs for a gameweek."""
+        return {
+            pp.player_id for pp in (
+                PlayerPresences.get_list(game_mode=GameMode.draft, is_mine=True, gameweek=gameweek) +
+                PlayerPresences.get_list(game_mode=GameMode.draft, is_mine=False, gameweek=gameweek)
+            )
+        }
 
     # --- Gameweeks ---
 

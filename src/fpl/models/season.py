@@ -352,8 +352,6 @@ class Season:
         self.team_stats = {team.team_id: TeamStats(team.team_id, self) for team in Query.all_teams()}
         self.player_stats = {player.player_id: PlayerStats(player.player_id, self) for player in Query.all_players()}
 
-        # view options
-        self.pos = None
         self.rotation_adapter: FotmobAdapter | None = None
 
     def play(self, fixtures: list[Fixture]):
@@ -403,10 +401,10 @@ class Season:
         return self.rotation_adapter.get_rival_start_hint(fpl_player_id, self.gameweek)
 
     @property
-    def top_xg_players(self) -> list[PlayerStats]:
+    def top_xg_players(self, position: PlayerType | None = None) -> list[PlayerStats]:
         return sorted(
             filter(
-                lambda ps: self.pos is None or ps.player.player_type == self.pos,
+                lambda ps: position is None or ps.player.player_type == position,
                 self.player_stats.values(),
             ),
             key=lambda ps: -ps.xg_last_5.p,
