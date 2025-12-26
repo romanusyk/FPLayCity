@@ -385,7 +385,7 @@ class GameweekPredictions:
     ) -> list[PlayerTotalPrediction]:
         return self.players_total_predictions(
             position=position,
-            player_blacklist=Query.all_draft_presence_ids(self.next_gameweek - 1),
+            player_blacklist=Query.all_draft_presence_ids(self.next_gameweek - 1) - Query.my_draft_presence_ids(self.next_gameweek - 1),
             sort_key=sort_key,
         )
 

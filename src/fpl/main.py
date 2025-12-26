@@ -62,6 +62,16 @@ def get_my_fpl_players(
     ]
 
 
+def get_my_draft_players(
+        predictions: GameweekPredictions,
+        next_gameweek: int,
+) -> list[PlayerPredictionView]:
+    return [
+        PlayerPredictionView.build(p, next_gameweek=next_gameweek, history_gws=predictions.min_history_gws)
+        for p in predictions.my_draft_players()
+    ]
+
+
 def get_available_draft_players(
         predictions: GameweekPredictions,
         next_gameweek: int,
@@ -111,12 +121,17 @@ async def main():
     if not next_gameweek:
         raise ValueError("NEXT_GAMEWEEK environment variable is not set")
     min_history_gws = 3
+    horizon = 1
 
     pipeline = await build_pipeline(next_gameweek)
 
-    predictions = predict(pipeline, next_gameweek, 3, min_history_gws)
+    predictions = predict(pipeline, next_gameweek, horizon, min_history_gws)
     all_players = top_players_new(predictions, next_gameweek)
+    all_players_defs = top_players_new(predictions, next_gameweek, PlayerType.DEF)
+    all_players_mids = top_players_new(predictions, next_gameweek, PlayerType.MID)
+    all_players_fwds = top_players_new(predictions, next_gameweek, PlayerType.FWD)
     my_fpl_players = get_my_fpl_players(predictions, next_gameweek)
+    my_draft_players = get_my_draft_players(predictions, next_gameweek)
     available_draft_gkps = get_available_draft_players(predictions, next_gameweek, PlayerType.GKP)
     available_draft_defs = get_available_draft_players(predictions, next_gameweek, PlayerType.DEF)
     available_draft_mids = get_available_draft_players(predictions, next_gameweek, PlayerType.MID)
