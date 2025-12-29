@@ -47,4 +47,11 @@ PLAYER_MAPPING_OVERRIDES: list[PlayerMappingOverride] = [
         fpl_player_id=646,
         note="João Victor Gomes da Silva",
     ),
+    PlayerMappingOverride(
+        fotmob_team_id=8472,
+        fotmob_player_id=1421003,
+        fpl_team_id=17,
+        fpl_player_id=775,
+        note="Timur Tuterov / Tutierov",
+    ),
 ]

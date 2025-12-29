@@ -121,7 +121,7 @@ async def main():
     if not next_gameweek:
         raise ValueError("NEXT_GAMEWEEK environment variable is not set")
     min_history_gws = 3
-    horizon = 1
+    horizon = 3
 
     pipeline = await build_pipeline(next_gameweek)
 

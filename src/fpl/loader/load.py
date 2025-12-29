@@ -130,7 +130,7 @@ async def load(client: AsyncClient, next_gameweek: int, freshness: int = 1):
                 SnapshotSpec(base_path=f"data/{season}/fpl_managers/{fpl_manager.value}/picks/{gw}")
             )
             await json_store.get_or_fetch(
-                freshness,
+                freshness if gw == next_gameweek - 1 else 1000,
                 lambda: fetch_json(client, f"entry/{fpl_manager.value}/event/{gw}/picks/", base_url=BASE_FPL_URL)
             )
 
@@ -140,7 +140,7 @@ async def load(client: AsyncClient, next_gameweek: int, freshness: int = 1):
                 SnapshotSpec(base_path=f"data/{season}/draft_managers/{draft_manager.value}/picks/{gw}")
             )
             await json_store.get_or_fetch(
-                freshness,
+                freshness if gw == next_gameweek - 1 else 1000,
                 lambda: fetch_json(client, f"entry/{draft_manager.value}/event/{gw}", base_url=BASE_DRAFT_URL)
             )
 
@@ -207,11 +207,11 @@ async def bootstrap(client: AsyncClient, next_gameweek: int):
     logger.info("Building fpl presences...")
     for fpl_manager in FplManager:
         json_store = JsonSnapshotStore(
-            SnapshotSpec(base_path=f"data/{season}/fpl_managers/{fpl_manager.value}/picks/{next_gameweek - 1}")
+            SnapshotSpec(base_path=f"data/{season}/fpl_managers/{fpl_manager.value}/picks/{next_gameweek - 2}")
         )
         squad = await json_store.get_or_fetch(
             freshness,
-            lambda: fetch_json(client, f"entry/{fpl_manager.value}/event/{next_gameweek - 1}/picks", base_url=BASE_FPL_URL)
+            lambda: fetch_json(client, f"entry/{fpl_manager.value}/event/{next_gameweek - 2}/picks", base_url=BASE_FPL_URL)
         )
         for presence in squad['picks']:
             PlayerPresences.add(fpl_presence_json_to_player_presence(
