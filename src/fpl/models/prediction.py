@@ -339,26 +339,29 @@ class GameweekPredictions:
 
     @property
     def players_points_exp_desc(self) -> list[PlayerTotalPrediction]:
-        return sorted(self.players_total_predictions, key=lambda p: -p.total_exp_points)
+        return self.players_total_predictions(sort_key=lambda p: -p.total_exp_points)
 
     @property
     def players_total_points_desc(self) -> list[PlayerTotalPrediction]:
-        return sorted(self.players_total_predictions, key=lambda p: -p.total_predicted_points)
+        return self.players_total_predictions(sort_key=lambda p: -p.total_predicted_points)
 
     @property
     def players_points_exp_per_value_desc(self) -> list[PlayerTotalPrediction]:
-        return sorted(self.players_total_predictions, key=lambda p: p.million_per_total_exp_points)
+        return self.players_total_predictions(sort_key=lambda p: p.million_per_total_exp_points)
 
     @property
     def players_total_points_per_value_desc(self) -> list[PlayerTotalPrediction]:
-        return sorted(self.players_total_predictions, key=lambda p: p.million_per_total_predicted_points)
+        return self.players_total_predictions(sort_key=lambda p: p.million_per_total_predicted_points)
 
     @property
     def teams_total_predictions(self) -> list[TeamTotalPrediction]:
         total_predictions = []
         for team_id in self.gameweek_predictions[0].team_fixture_predictions:
             total_predictions.append(TeamTotalPrediction(
-                [gp.team_fixture_predictions[team_id] for gp in self.gameweek_predictions],
+                [
+                    gp.team_fixture_predictions[team_id] for gp in self.gameweek_predictions
+                    if team_id in gp.team_fixture_predictions
+                ],
             ))
         return total_predictions
 
@@ -406,7 +409,10 @@ class GameweekPredictions:
                 continue
             total_predictions.append(PlayerTotalPrediction(
                 self.season,
-                [gp.player_fixture_predictions[player_id] for gp in self.gameweek_predictions],
+                [
+                    gp.player_fixture_predictions[player_id] for gp in self.gameweek_predictions
+                    if player_id in gp.player_fixture_predictions
+                ],
                 min_history_gws=self.min_history_gws,
             ))
         return sorted(total_predictions, key=sort_key)

@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -151,6 +152,19 @@ def _build_match_details(match_json: dict, team_id: int) -> MatchDetails:
     )
 
 
+def _extract_next_page_props(html: str) -> dict:
+    """Extract Next.js `pageProps` JSON from a FotMob page HTML."""
+    m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.S)
+    if not m:
+        raise ValueError("Missing __NEXT_DATA__ script tag")
+    data = json.loads(m.group(1))
+    props = data.get("props") or {}
+    page_props = props.get("pageProps")
+    if not isinstance(page_props, dict):
+        raise ValueError("Missing pageProps in __NEXT_DATA__")
+    return page_props
+
+
 class FotMobClient:
     """Client for making FotMob API requests with browser context."""
 
@@ -287,27 +301,26 @@ class FotMobClient:
             raise RuntimeError("Client not started. Use async context manager or call start() first.")
 
         logging.info(f"Fetching team data: team_id={team_id}, ccode3={ccode3}")
-        
-        # Use a page and capture the natural API response done by the app
-        page = await self._context.new_page()
-        
+        page = await asyncio.wait_for(self._context.new_page(), timeout=15)
         try:
-            # Navigate to team overview - the site should trigger the API call we need
-            await page.goto(
-                f"{FOTMOB_BASE_URL}/teams/{team_id}/overview",
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
             try:
-                response = await page.wait_for_event(
-                    "response",
-                    predicate=lambda resp: self._is_teams_api_response(resp.url, team_id),
+                async with page.expect_response(
+                    lambda resp: self._is_teams_api_response(resp.url, team_id),
                     timeout=45000,
-                )
+                ) as response_info:
+                    await asyncio.wait_for(
+                        page.goto(
+                            f"{FOTMOB_BASE_URL}/teams/{team_id}/overview",
+                            wait_until="domcontentloaded",
+                            timeout=30000,
+                        ),
+                        timeout=35,
+                    )
+                    response = await response_info.value
                 captured = await response.json()
             except Exception as exc:
-                raise TeamFetchError(team_id, "Timed out waiting for team details API response") from exc
-            
+                raise TeamFetchError(team_id, f"Failed to fetch team data: {type(exc).__name__}: {exc}") from exc
+
             logging.info(f"Successfully fetched team data for team_id={team_id}")
             return captured
         finally:
@@ -375,25 +388,35 @@ class FotMobClient:
         logging.info(f"[team] {team_name}: {len(existing_ids)} known, {total_candidates} new finished; "
                      f"loading up to {len(candidates)}")
 
-        # Step 4: With the same page/context, iterate and capture matchDetails for each candidate
+        # Step 4: Iterate matches and save match details.
+        #
+        # NOTE: FotMob's JSON API endpoints can be protected (403 / hanging bodies) in automation.
+        # The match page HTML includes a full `__NEXT_DATA__` payload with `pageProps` that mirrors
+        # the matchDetails structure (`general`, `header`, `content`, ...). We parse that instead.
         saved_ids: list[int] = []
-        page = await self._context.new_page()
         try:
             for idx, (dt, match_id, page_url) in enumerate(candidates, start=1):
                 logging.info(f"[progress] {team_name}: loading match {idx}/{len(candidates)} "
                              f"id={match_id} date={dt.isoformat()}")
-                target_url = f"{FOTMOB_BASE_URL}{page_url}"
+                target_url = f"{FOTMOB_BASE_URL}{page_url}".split("#")[0]
                 logging.info(f"[match] Navigating to {target_url}")
-                await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
                 try:
-                    resp = await page.wait_for_event(
-                        "response",
-                        predicate=lambda r: self._is_match_details_response(r.url, match_id),
-                        timeout=45000,
+                    resp = await asyncio.wait_for(
+                        self._context.request.get(target_url, headers={"accept": "text/html", **self._default_headers}),
+                        timeout=30,
                     )
-                    captured = await resp.json()
+                    if not resp.ok:
+                        raise RuntimeError(f"HTTP {resp.status}")
+                    html = await asyncio.wait_for(resp.text(), timeout=30)
+                    captured = _extract_next_page_props(html)
+                    if not isinstance(captured.get("general"), dict) or not captured.get("general", {}).get("matchId"):
+                        raise ValueError("Unexpected pageProps shape (missing general.matchId)")
                 except Exception as exc:
-                    raise MatchFetchError(team_id, match_id, "Timed out waiting for matchDetails response") from exc
+                    raise MatchFetchError(
+                        team_id,
+                        match_id,
+                        f"Failed to parse match details from page HTML: {type(exc).__name__}: {exc}",
+¡                    ) from exc
 
                 filepath = os.path.join(base_dir, f"{match_id}.json")
                 try:
@@ -408,7 +431,7 @@ class FotMobClient:
             logging.error("[team] %s: %s", team_name, exc)
             return saved_ids
         finally:
-            await page.close()
+            pass
 
 def load_saved_match_details(
     season: str = "2025-2026",
@@ -463,6 +486,7 @@ def main():
     parser.add_argument("--season", type=str, default="2025-2026", help="Season directory name (default: 2025-2026)")
 
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
 
     async def _run():
         async with FotMobClient(headless=not args.no_headless) as client:
@@ -495,7 +519,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-

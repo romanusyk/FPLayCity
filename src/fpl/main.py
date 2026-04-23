@@ -120,13 +120,14 @@ async def main():
     next_gameweek = int(os.getenv("NEXT_GAMEWEEK"))
     if not next_gameweek:
         raise ValueError("NEXT_GAMEWEEK environment variable is not set")
-    min_history_gws = 3
-    horizon = 3
+    min_history_gws = 5
+    horizon = 8
 
     pipeline = await build_pipeline(next_gameweek)
 
     predictions = predict(pipeline, next_gameweek, horizon, min_history_gws)
     all_players = top_players_new(predictions, next_gameweek)
+    all_players_gkps = top_players_new(predictions, next_gameweek, PlayerType.GKP)
     all_players_defs = top_players_new(predictions, next_gameweek, PlayerType.DEF)
     all_players_mids = top_players_new(predictions, next_gameweek, PlayerType.MID)
     all_players_fwds = top_players_new(predictions, next_gameweek, PlayerType.FWD)
