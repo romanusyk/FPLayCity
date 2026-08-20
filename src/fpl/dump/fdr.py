@@ -7,6 +7,9 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Optional
 
+from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
+from src.fpl.loader.utils import Season
+
 
 def find_latest_file(directory: str, pattern: str = "response_body_*.json") -> str:
     """Find the latest timestamped file in a directory."""
@@ -21,24 +24,22 @@ def find_latest_file(directory: str, pattern: str = "response_body_*.json") -> s
     return latest_file
 
 
-def find_latest_season_files(season: str = "2025-2026") -> tuple[str, str]:
-    """Find the latest fixtures and bootstrap files for a season."""
-    # Get the script directory and find data directory
-    script_dir = Path(__file__).parent
-    data_dir = script_dir.parent.parent.parent / "data" / season
-    
-    fixtures_dir = data_dir / "fixtures"
-    bootstrap_dir = data_dir / "bootstrap"
-    
-    if not fixtures_dir.exists():
-        raise FileNotFoundError(f"Fixtures directory not found: {fixtures_dir}")
-    if not bootstrap_dir.exists():
-        raise FileNotFoundError(f"Bootstrap directory not found: {bootstrap_dir}")
-    
-    fixtures_path = find_latest_file(str(fixtures_dir))
-    bootstrap_path = find_latest_file(str(bootstrap_dir))
-    
-    return fixtures_path, bootstrap_path
+def find_latest_season_files(season: str | None = None) -> tuple[str, str]:
+    """Find the latest fixtures and bootstrap snapshots for a season.
+
+    Resolves through `JsonSnapshotStore` so it tracks the single-snapshot layout
+    (`data/<season>/<resource>_<ts>.json`) rather than the retired directory-per-resource one.
+    """
+    season = season or Season.CURRENT
+    paths = []
+    for resource in ("fixtures", "bootstrap"):
+        latest = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{season}/{resource}")).find_latest()
+        if latest is None:
+            raise FileNotFoundError(
+                f"No {resource} snapshot under data/{season}/. Run `uv run -m src.fpl.fetch` first."
+            )
+        paths.append(latest[1])
+    return paths[0], paths[1]
 
 
 def load_bootstrap_data(bootstrap_path: str) -> Dict[int, str]:
@@ -182,8 +183,8 @@ def dump_fdr_csv(fixtures_path: str, bootstrap_path: str, first_gw: Optional[int
     fdr_data = dump_fdr(fixtures_path, bootstrap_path, first_gw, last_gw)
     
     # Ensure dumps directory exists
-    data_dir = Path(fixtures_path).parent.parent  # Go up from fixtures/ to data/
-    dumps_dir = data_dir / 'dumps'
+    season_dir = Path(fixtures_path).parent  # snapshots live directly under data/<season>/
+    dumps_dir = season_dir / 'dumps'
     dumps_dir.mkdir(exist_ok=True)
     
     # Write CSV
@@ -220,8 +221,8 @@ def dump_fdr_csv(fixtures_path: str, bootstrap_path: str, first_gw: Optional[int
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(description='Dump Fantasy Premier League Fixture Difficulty Ratings')
-    parser.add_argument('fixtures_path', nargs='?', help='Path to fixtures response body JSON file (optional, auto-detects latest for 2025-2026)')
-    parser.add_argument('bootstrap_path', nargs='?', help='Path to bootstrap response body JSON file (optional, auto-detects latest for 2025-2026)')
+    parser.add_argument('fixtures_path', nargs='?', help='Path to fixtures response body JSON file (optional, auto-detects the latest snapshot for the current season)')
+    parser.add_argument('bootstrap_path', nargs='?', help='Path to bootstrap response body JSON file (optional, auto-detects the latest snapshot for the current season)')
     parser.add_argument('--first-gw', type=int, help='First gameweek to include')
     parser.add_argument('--last-gw', type=int, help='Last gameweek to include')
     
@@ -229,7 +230,7 @@ def main():
     
     # Auto-detect files if not provided
     if args.fixtures_path is None or args.bootstrap_path is None:
-        print("Auto-detecting latest files for 2025-2026 season...")
+        print(f"Auto-detecting latest files for {Season.CURRENT} season...")
         auto_fixtures_path, auto_bootstrap_path = find_latest_season_files()
         
         fixtures_path = args.fixtures_path or auto_fixtures_path

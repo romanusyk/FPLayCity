@@ -140,16 +140,18 @@ class TestPlayerFixturesCollection:
 class TestUnsupportedIndices:
     """Test that unsupported index combinations raise KeyError."""
     
-    def test_player_fixtures_by_player_and_gameweek_unsupported(self):
+    def test_player_fixtures_by_player_and_gameweek_returns_empty_when_absent(self):
         """
-        Querying by player_id + gameweek is NOT supported.
-        
-        This index combination doesn't exist in PlayerFixtures.
-        Should raise KeyError.
+        Querying by player_id + gameweek IS supported, and defaults to an empty list.
+
+        The index exists so `Query.player_fixtures_by_player_and_gameweeks` can walk a range
+        without a KeyError on every blank gameweek, which is why it declares
+        `default_factory=list` rather than raising.
         """
-        with pytest.raises(KeyError):
-            PlayerFixtures.get_list(player_id=1, gameweek=1)
-    
+        assert PlayerFixtures.get_list(player_id=1, gameweek=1) is not None
+        assert PlayerFixtures.get_list(player_id=-1, gameweek=999) == []
+
+
     def test_fixtures_by_team_unsupported(self):
         """
         Querying fixtures by team_id is NOT supported.

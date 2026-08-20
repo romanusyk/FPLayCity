@@ -269,8 +269,17 @@ class PlayerType(Enum):
 
 @dataclass
 class Player:
+    """One FPL element in the current season.
+
+    Key invariants:
+    - `player_id` is the element id, which FPL reassigns every season. Never compare it
+      across seasons.
+    - `code` is stable for the lifetime of a player and is the only safe cross-season join.
+      See `CLAUDE.md`.
+    """
 
     player_id: int
+    code: int
     first_name: str
     second_name: str
     web_name: str
@@ -282,10 +291,41 @@ class Player:
     chance_of_playing_this_round: int
     news: str
     minutes: int
+    selected_by_percent: float = 0.0
+    penalties_order: int | None = None
+    corners_order: int | None = None
+    direct_freekicks_order: int | None = None
+
+    @property
+    def set_piece_roles(self) -> list[str]:
+        """Set-piece duties FPL currently lists this player as first choice for.
+
+        Only rank 1 counts. Being second in the queue changes almost nothing until the player
+        ahead is dropped, and the ordering is FPL's editorial judgement rather than a measured
+        rate - which is why these are surfaced as flags on the board rather than folded into
+        the projection.
+        """
+        roles = []
+        if self.penalties_order == 1:
+            roles.append('penalties')
+        if self.direct_freekicks_order == 1:
+            roles.append('direct_freekicks')
+        if self.corners_order == 1:
+            roles.append('corners')
+        return roles
 
     @property
     def team(self) -> Team:
         return Teams.get_one(team_id=self.team_id)
+
+    @property
+    def is_available(self) -> bool:
+        """True unless FPL flags the player as injured, suspended or gone.
+
+        `status` is FPL's own availability feed: 'a' available, 'd' doubtful, 'i' injured,
+        's' suspended, 'u' unavailable, 'n' not in squad.
+        """
+        return self.status == 'a'
 
     @property
     def full_name(self) -> str:
@@ -336,6 +376,120 @@ class PlayerPresence:
     is_captain: bool
     is_vice_captain: bool
     multiplier: int
+
+
+class PriorSeasonSource(Enum):
+    """How a `PlayerSeason` row reconciled against the bootstrap payload.
+
+    Until a new season kicks off the FPL bootstrap carries each element's *previous*-season
+    totals. Measured across all 587 elements on 2026-08-15, it mirrors
+    `element-summary/{id}/history_past` exactly for every player who stayed at the same club,
+    and is unreliable for every player who moved - either zeroed outright (6 players) or
+    truncated (1 player). `history_past` is therefore treated as authoritative.
+    """
+
+    BOOTSTRAP = 'bootstrap'
+    """Bootstrap and history_past agreed. The overwhelmingly common case."""
+
+    HISTORY_PAST = 'history_past'
+    """Player was registered but never played; both sources report zero."""
+
+    RECOVERED_FROM_HISTORY = 'recovered_from_history'
+    """Bootstrap zeroed a real season after the player changed club. Recovered in full."""
+
+    PARTIAL_IN_BOOTSTRAP = 'partial_in_bootstrap'
+    """Bootstrap held a truncated total after a club change. Corrected from history_past."""
+
+
+@dataclass
+class PlayerSeason(Measurable):
+    """A player's aggregated totals for one completed season.
+
+    Key invariants:
+    - `player_id` is the element id in the season we are loading *into*, so the row can be
+      joined onto the current `Players` collection.
+    - `season` is a `Season` directory name (e.g. `2025-2026`), not the FPL `2025/26` form.
+    - Totals may have been earned at a different club; `Player.team` is the *current* club.
+      Use `is_new_club` to detect that case.
+    - Clubs are compared by `short_name`, never by team id: FPL renumbers teams alphabetically
+      every season, so 16 of 20 ids changed meaning between 2025/26 and 2026/27.
+    """
+
+    player_id: int
+    season: str
+    source: PriorSeasonSource
+    team_id: int
+    team: str
+    prior_team: str | None
+
+    minutes: int
+    starts: int
+    total_points: int
+    goals_scored: int
+    assists: int
+    clean_sheets: int
+    goals_conceded: int
+    own_goals: int
+    penalties_saved: int
+    penalties_missed: int
+    yellow_cards: int
+    red_cards: int
+    saves: int
+    bonus: int
+    bps: int
+    defensive_contribution: int
+    expected_goals: float
+    expected_assists: float
+    expected_goal_involvements: float
+    expected_goals_conceded: float
+
+    @property
+    def player(self) -> Player:
+        return Players.get_one(player_id=self.player_id)
+
+    @property
+    def is_new_club(self) -> bool:
+        """True when the player changed club between this season and the current one.
+
+        False when `prior_team` is unknown, which means we hold no bootstrap snapshot for the
+        prior season rather than that the player stayed put.
+        """
+        return self.prior_team is not None and self.prior_team != self.team
+
+    @property
+    def nineties(self) -> float:
+        return self.minutes / 90.0
+
+    def per_90(self, value: float) -> float:
+        """Scale a season total to a per-90 rate. Returns 0.0 for players with no minutes."""
+        return value / self.nineties if self.minutes else 0.0
+
+    @property
+    def points_per_90(self) -> float:
+        return self.per_90(self.total_points)
+
+    @property
+    def xgi_per_90(self) -> float:
+        return self.per_90(self.expected_goal_involvements)
+
+    @property
+    def defensive_contribution_per_90(self) -> float:
+        return self.per_90(self.defensive_contribution)
+
+    def get_metric(self, metric: Metric) -> float:
+        return {
+            Metric.XG: self.expected_goals,
+            Metric.XA: self.expected_assists,
+            Metric.XGC: self.expected_goals_conceded,
+            Metric.CS: self.clean_sheets,
+            Metric.DC: self.defensive_contribution,
+            Metric.MP: self.minutes,
+            Metric.PTS: self.total_points,
+        }[metric]
+
+    def __repr__(self):
+        return (f'PlayerSeason({self.season} p={self.player_id} pts={self.total_points} '
+                f'min={self.minutes} src={self.source.value})')
 
 
 @dataclass
@@ -415,7 +569,7 @@ PlayerFixtures = Collection[PlayerFixture](
 )
 
 Players = Collection[Player](
-    simple_indices=[SimpleIndex('player_id')],
+    simple_indices=[SimpleIndex('player_id'), SimpleIndex('code', default_value=None)],
     list_indices=[ListIndex('team_id')],
 )
 
@@ -425,6 +579,16 @@ PlayerPresences = Collection[PlayerPresence](
     list_indices=[
         ListIndex('manager_id', 'gameweek'),
         ListIndex('game_mode', 'is_mine', 'gameweek'),
+    ],
+)
+
+
+PlayerSeasons = Collection[PlayerSeason](
+    simple_indices=[SimpleIndex('player_id', 'season', default_value=None)],
+    list_indices=[
+        ListIndex('season', default_factory=list),
+        ListIndex('player_id', default_factory=list),
+        ListIndex('team_id', 'season', default_factory=list),
     ],
 )
 
@@ -565,6 +729,15 @@ class Query:
         return Players.get_one(player_id=player_id)
     
     @staticmethod
+    def player_by_code(code: int) -> Player | None:
+        """Get a player by their season-stable element `code`.
+
+        Returns None when that player is not in the current season - relegated, sold abroad or
+        retired. Absence is meaningful, so callers must handle it.
+        """
+        return Players.get_one(code=code)
+
+    @staticmethod
     def players_by_team(team_id: int) -> list[Player]:
         """Get all players in a team."""
         return Players.get_list(team_id=team_id)
@@ -643,6 +816,28 @@ class Query:
                 PlayerPresences.get_list(game_mode=GameMode.draft, is_mine=False, gameweek=gameweek)
             )
         }
+
+    # --- Player seasons (prior-season baseline) ---
+
+    @staticmethod
+    def player_season(player_id: int, season: str) -> PlayerSeason | None:
+        """Get a player's totals for a completed season.
+
+        Returns None when the player has no record for that season - a new signing from
+        outside the Premier League, or a promoted-club player. Absence is meaningful, so
+        callers must handle it rather than treating a missing row as zeros.
+        """
+        return PlayerSeasons.get_one(player_id=player_id, season=season)
+
+    @staticmethod
+    def player_seasons_by_season(season: str) -> list[PlayerSeason]:
+        """Get every player's totals for a completed season."""
+        return PlayerSeasons.get_list(season=season)
+
+    @staticmethod
+    def player_seasons_by_team(team_id: int, season: str) -> list[PlayerSeason]:
+        """Get prior-season totals for every player currently at a club."""
+        return PlayerSeasons.get_list(team_id=team_id, season=season)
 
     # --- Gameweeks ---
 

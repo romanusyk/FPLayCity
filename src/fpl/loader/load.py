@@ -31,11 +31,27 @@ from src.fpl.loader.convert import (
     draft_presence_json_to_player_presence,
     team_json_to_team,
 )
+from src.fpl.loader.baseline import (
+    build_prior_season_baseline,
+    load_prior_season_baseline,
+    persist_prior_season_baseline,
+)
 from src.fpl.loader.news.pl import list_saved_news
 from src.fpl.loader.news.validate import list_saved_facts
 from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
 from src.fpl.loader.utils import Season
-from src.fpl.models.immutable import Fixtures, TeamFixtures, Gameweeks, News, NewsFacts, PlayerFixtures, Players, PlayerPresences, Teams
+from src.fpl.models.immutable import (
+    Fixtures,
+    TeamFixtures,
+    Gameweeks,
+    News,
+    NewsFacts,
+    PlayerFixtures,
+    Players,
+    PlayerPresences,
+    PlayerSeasons,
+    Teams,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -98,8 +114,8 @@ async def fetch_player_summaries(
     return await aggregate_store.get_or_fetch(freshness, _fetch_aggregate)
 
 
-async def load(client: AsyncClient, next_gameweek: int, freshness: int = 1):
-    season = Season.s2526
+async def load(client: AsyncClient, next_gameweek: int, freshness: int = 1, season: str | None = None):
+    season = season or Season.CURRENT
 
     bootstrap_store = JsonSnapshotStore(
         SnapshotSpec(base_path=f"data/{season}/bootstrap")
@@ -145,8 +161,114 @@ async def load(client: AsyncClient, next_gameweek: int, freshness: int = 1):
             )
 
 
-async def bootstrap(client: AsyncClient, next_gameweek: int):
-    season = Season.s2526
+def _load_news(season: str, next_gameweek: int) -> None:
+    """Populate the News and NewsFacts collections from disk for `next_gameweek`."""
+    logger.info("Loading news articles...")
+    news_items = list_saved_news(
+        collection="fpl_scout",
+        gameweek=next_gameweek,
+        include_body=True,
+        season=season,
+    )
+    logger.info("Populating News collection...")
+    for news_model in news_items:
+        News.add(news_model)
+
+    logger.info("Loading news facts...")
+    news_facts = list_saved_facts(
+        season=season,
+        gameweek=next_gameweek,
+        collection="fpl_scout",
+    )
+    logger.info("Populating News facts...")
+    for fact in news_facts:
+        NewsFacts.add(fact)
+
+
+async def capture_prior_season(client: AsyncClient, season: str | None = None, freshness: int = 1) -> str:
+    """Fetch what is needed to snapshot the previous season's per-player totals.
+
+    Run this **before** the new season's first kickoff. Until then `bootstrap-static` still
+    carries last season's totals against each player's new club, so this is the last chance to
+    capture a complete baseline from the live API.
+
+    Parameters:
+    - client: HTTP client for the FPL API.
+    - season: Season being loaded. Defaults to `Season.CURRENT`.
+    - freshness: Days before a cached snapshot is considered stale.
+
+    Returns:
+    - Path of the derived baseline snapshot.
+    """
+    season = season or Season.CURRENT
+    bootstrap_store = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{season}/bootstrap"))
+    main_response_body = await bootstrap_store.get_or_fetch(
+        freshness,
+        lambda: fetch_json(client, "bootstrap-static/"),
+    )
+    logger.info("Fetching element summaries for %d players...", len(main_response_body["elements"]))
+    player_response_bodies = await fetch_player_summaries(
+        client,
+        season,
+        [str(element["id"]) for element in main_response_body["elements"]],
+        freshness,
+    )
+    build_prior_season_baseline(
+        element_rows=main_response_body["elements"],
+        player_summaries=player_response_bodies,
+        team_rows=main_response_body["teams"],
+        season=season,
+    ).log()
+    return persist_prior_season_baseline(season)
+
+
+def load_from_snapshots(season: str | None = None) -> None:
+    """Populate the core collections from stored snapshots, with no network access.
+
+    `bootstrap()` is the loader for a live session: it fetches, refreshes, reads manager picks
+    and news, and needs an HTTP client. Projection runs and the web app need none of that -
+    they need Teams, Gameweeks, Fixtures, Players and the prior-season baseline exactly as they
+    were captured, and they need it to be reproducible. Two callers, two entry points.
+
+    Parameters:
+    - season: season to load. Defaults to `Season.CURRENT`.
+
+    The collections are process-level singletons, so they are cleared first. Loading twice in
+    one process is a legitimate thing to do - a test session, or serving a different season -
+    and appending would collide on every key.
+
+    Raises:
+    - FileNotFoundError: if the bootstrap or fixtures snapshot is missing. Fetch them with
+      `uv run -m src.fpl.fetch`.
+    """
+    season = season or Season.CURRENT
+    bootstrap_body = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{season}/bootstrap")).load_latest()
+    fixtures_body = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{season}/fixtures")).load_latest()
+
+    for collection in (Gameweeks, Teams, Fixtures, TeamFixtures, Players, PlayerSeasons):
+        collection.clear()
+
+    for event in bootstrap_body['events']:
+        Gameweeks.add(event_json_to_gameweek(event))
+    for row in bootstrap_body['teams']:
+        Teams.add(team_json_to_team(row))
+    for row in fixtures_body:
+        fixture = fixture_json_to_fixture(row)
+        Fixtures.add(fixture)
+        TeamFixtures.add(fixture.home)
+        TeamFixtures.add(fixture.away)
+    for element in bootstrap_body['elements']:
+        Players.add(element_json_to_player(element))
+
+    load_prior_season_baseline(season)
+    logger.info(
+        "Loaded %s from snapshots: %d teams, %d players, %d fixtures",
+        season, len(Teams.items), len(Players.items), len(Fixtures.items),
+    )
+
+
+async def bootstrap(client: AsyncClient, next_gameweek: int, season: str | None = None):
+    season = season or Season.CURRENT
     freshness = 1000
 
     logger.info("Building bootstrap store...")
@@ -193,6 +315,15 @@ async def bootstrap(client: AsyncClient, next_gameweek: int):
     for player in main_response_body['elements']:
         Players.add(element_json_to_player(player))
 
+    logger.info("Building prior-season baseline...")
+    build_prior_season_baseline(
+        element_rows=main_response_body['elements'],
+        player_summaries=player_response_bodies,
+        team_rows=main_response_body['teams'],
+        season=season,
+    ).log()
+    persist_prior_season_baseline(season)
+
     logger.info("Building player fixtures...")
     for player_id, row in player_response_bodies.items():
         for fixture in row['history']:
@@ -203,6 +334,13 @@ async def bootstrap(client: AsyncClient, next_gameweek: int):
             PlayerFixtures.add(
                 future_fixture_to_player_fixture(int(player_id), fixture)
             )
+
+    if next_gameweek <= 1:
+        # Nobody has picked a squad before GW1, so `entry/.../event/0/...` does not exist.
+        # This is a structural property of a fresh season, not missing data.
+        logger.info("Skipping manager presences: no squads are picked before GW1.")
+        _load_news(season, next_gameweek)
+        return
 
     logger.info("Building fpl presences...")
     for fpl_manager in FplManager:
@@ -238,27 +376,4 @@ async def bootstrap(client: AsyncClient, next_gameweek: int):
                 is_mine=draft_manager == DraftManager.ME,
             ))
     
-    logger.info("Loading news articles...")
-    # Load news articles from disk for the next gameweek
-    # Only load "fpl_scout" collection
-    news_items = list_saved_news(
-        collection="fpl_scout",
-        gameweek=next_gameweek,
-        include_body=True,
-        season=season,
-    )
-    logger.info("Populating News collection...")
-    # Populate News collection from loaded items
-    for news_model in news_items:
-        News.add(news_model)
-
-    logger.info("Loading news facts...")
-    # Load news facts
-    news_facts = list_saved_facts(
-        season=season,
-        gameweek=next_gameweek,
-        collection="fpl_scout",
-    )
-    logger.info("Populating News facts...")
-    for fact in news_facts:
-        NewsFacts.add(fact)
+    _load_news(season, next_gameweek)

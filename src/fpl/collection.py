@@ -115,11 +115,25 @@ class SimpleIndex(BaseIndex[Item]):
         self.allow_overwrite = allow_overwrite
 
     def add(self, item: Item) -> None:
-        """Add item to index. Asserts key uniqueness unless allow_overwrite=True."""
+        """
+        Add item to index.
+
+        Raises:
+            ValueError: On a duplicate key, unless allow_overwrite=True. Two items claiming the
+                same key means one of them would become unreachable, which is silent data loss.
+        """
         key_value = self.key_value(item)
-        if not self.allow_overwrite:
-            assert key_value not in self._map
+        if not self.allow_overwrite and key_value in self._map:
+            raise ValueError(
+                f"Duplicate key {key_value} on index {self.key_fields}. Existing: "
+                f"{self._map[key_value]!r}, new: {item!r}. If the collection is being loaded "
+                f"twice in one process, call Collection.clear() first."
+            )
         self._map[key_value] = item
+
+    def clear(self) -> None:
+        """Drop every entry, so the owning collection can be reloaded."""
+        self._map.clear()
 
     def get(self, **keys) -> Item:
         """Retrieve the single item matching the key values."""
@@ -169,6 +183,10 @@ class ListIndex(BaseIndex[Item]):
             self._map[key_value] = []
         self._map[key_value].append(item)
 
+    def clear(self) -> None:
+        """Drop every entry, so the owning collection can be reloaded."""
+        self._map.clear()
+
     def get(self, **keys) -> list[Item]:
         """Retrieve the list of all items matching the key values."""
         key_values = tuple(keys[field] for field in self.key_fields)
@@ -214,6 +232,11 @@ class IndexGroup(Generic[Item]):
         """Add item to all indices in this group."""
         for index in self.indices.values():
             index.add(item)
+
+    def clear(self) -> None:
+        """Empty every index in this group."""
+        for index in self.indices.values():
+            index.clear()
 
     def resolve_index(self, **keys) -> BaseIndex[Item]:
         """Find the index that matches the provided key field names."""
@@ -269,6 +292,17 @@ class Collection(Generic[Item]):
         self.items.append(item)
         self.simple_indices.add(item)
         self.list_indices.add(item)
+
+    def clear(self) -> None:
+        """
+        Empty the collection and every index on it.
+
+        Collections are process-level singletons, so a second load in the same process would
+        otherwise hit duplicate keys. Loaders that repopulate from scratch call this first.
+        """
+        self.items.clear()
+        self.simple_indices.clear()
+        self.list_indices.clear()
 
     def get_one(self, **keys) -> Item:
         """Retrieve single item using a simple (unique) index. Raises KeyError if not found."""

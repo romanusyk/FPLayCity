@@ -23,6 +23,7 @@ from httpx import AsyncClient
 
 from src.fpl.loader.load import bootstrap
 from src.fotmob.load import load_saved_match_details
+from src.fpl.loader.utils import Season
 from src.fpl.compute.prediction import PredictionPipeline
 from src.fotmob.rotation.fotmob_adapter import FotmobAdapter, build_gameweek_mapper
 from src.fotmob.rotation.rotation_config import RotationConfig
@@ -39,7 +40,7 @@ async def build_pipeline(next_gameweek: int) -> PredictionPipeline:
     await bootstrap(client, next_gameweek)
 
     # Read saved FotMob lineups/match details from disk (no fetching here)
-    season_dir = "2025-2026"
+    season_dir = Season.CURRENT
     logger.info("Loading FotMob data...")
     match_details = load_saved_match_details(season=season_dir)
     total_matches = sum(len(v) for v in match_details.values())

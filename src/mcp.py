@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -9,14 +8,13 @@ from typing import Annotated
 from src.fpl.const import GameMode
 from src.fpl.compute.prediction import PredictionPipeline
 from src.fpl.core import build_pipeline
+from src.fpl.loader.utils import resolve_next_gameweek
 from src.fpl.views import TeamPredictionView
 
 logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
-next_gameweek = int(os.getenv("NEXT_GAMEWEEK"))
-if not next_gameweek:
-    raise ValueError("NEXT_GAMEWEEK environment variable is not set")
+next_gameweek = resolve_next_gameweek()
 mcp = FastMCP("fantasy")
 
 

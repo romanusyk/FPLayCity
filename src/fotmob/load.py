@@ -16,13 +16,22 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 from urllib.parse import parse_qs, quote, urlparse
 
-from playwright.async_api import APIRequestContext, BrowserContext, async_playwright
-from src.fpl.loader.utils import ensure_dir_exists
-from src.fotmob.models.fotmob import FotmobTeam, FotmobPlayer, Substitution, MatchDetails
-from src.fotmob.models.fotmob_metadata import TEAMS, TEAM_NAME_TO_ID
+if TYPE_CHECKING:  # Only the fetching path needs a browser; readers must not pay for one.
+    from playwright.async_api import APIRequestContext, BrowserContext
+
+from src.fpl.loader.utils import Season, ensure_dir_exists
+from src.fotmob.models.fotmob import (
+    FotmobTeam,
+    FotmobPlayer,
+    MatchDetails,
+    MatchKind,
+    Substitution,
+    classify_match_kind,
+)
+from src.fotmob.models.fotmob_metadata import TEAM_NAME_TO_ID, teams_for_season
 
 
 FOTMOB_BASE_URL = "https://www.fotmob.com"
@@ -39,6 +48,15 @@ class MatchFetchError(RuntimeError):
         super().__init__(f"team_id={team_id} match_id={match_id}: {message}")
         self.team_id = team_id
         self.match_id = match_id
+
+
+class StaleFixtureError(MatchFetchError):
+    """A fixture-list entry whose slug no longer resolves to that match.
+
+    FotMob match slugs are not season-scoped, so last season's
+    `/matches/burnley-vs-wolverhampton-wanderers/...` now serves *next* season's meeting. The
+    entry is stale rather than broken, so callers skip and count it instead of aborting.
+    """
 
 
 def _as_int(value: Any) -> int:
@@ -95,12 +113,90 @@ def _collect_substitutions(match_json: dict, team_is_home: bool) -> list[Substit
     return subs
 
 
+def _parse_match_identity(match_json: dict, general: dict) -> tuple[int, datetime]:
+    """Extract (match_id, kickoff time) from a match payload."""
+    header_status = (match_json.get("header") or {}).get("status") or {}
+    utc_time_str = header_status.get("utcTime") or general.get("matchTimeUTCDate")
+    if not utc_time_str:
+        raise ValueError("Match JSON missing kickoff time")
+    match_id_raw = general.get("matchId")
+    if match_id_raw is None:
+        raise ValueError("Match JSON missing matchId")
+    return int(match_id_raw), datetime.fromisoformat(utc_time_str.replace("Z", "+00:00"))
+
+
+def _build_lineup_less_match(
+    match_json: dict,
+    general: dict,
+    team_id: int,
+    league_name: str,
+    kind: MatchKind,
+) -> MatchDetails:
+    """Build `MatchDetails` for a friendly FotMob published without any lineup.
+
+    The fixture still counts towards a club's pre-season schedule, so we keep it with empty
+    squad lists and `lineup_available=False`. Downstream consumers must not read `starters`
+    or `benched` from these without checking the flag.
+    """
+    match_id, event_time = _parse_match_identity(match_json, general)
+    return MatchDetails(
+        match_id=match_id,
+        event_time=event_time,
+        opponent_team=_opponent_from_general(general, team_id),
+        starters=[],
+        benched=[],
+        unavailable=[],
+        subs_log=[],
+        league_name=league_name,
+        kind=kind,
+        lineup_available=False,
+    )
+
+
+def _opponent_from_general(general: dict, team_id: int) -> FotmobTeam:
+    """Resolve the opponent from the `general` block, used when no lineup was published."""
+    home = general.get("homeTeam") or {}
+    away = general.get("awayTeam") or {}
+    home_id, away_id = _as_int(home.get("id")), _as_int(away.get("id"))
+    if team_id == home_id:
+        other = away
+    elif team_id == away_id:
+        other = home
+    else:
+        raise ValueError(f"Team id {team_id} is neither side of match ({home_id} vs {away_id})")
+    return FotmobTeam(id=_as_int(other.get("id")), name=other.get("name", "Unknown"))
+
+
 def _build_match_details(match_json: dict, team_id: int) -> MatchDetails:
+    """Convert a saved FotMob match payload into one team's `MatchDetails`.
+
+    Friendlies are frequently published without any lineup. That is expected, so it produces a
+    `MatchDetails` with `lineup_available=False` rather than an exception - the match still
+    tells us the fixture happened. A *competitive* match without a lineup is a genuine data
+    problem and raises.
+
+    Raises:
+    - ValueError: on a competitive match with no lineup, a missing kickoff time or match id,
+      or when `team_id` is not one of the two sides.
+    """
+    general = match_json.get("general") or {}
+    league_name = general.get("leagueName")
+    if not league_name:
+        raise ValueError("Match JSON missing league name")
+    kind = classify_match_kind(league_name)
+
     lineup = ((match_json.get("content") or {}).get("lineup") or {})
     home_section = lineup.get("homeTeam")
     away_section = lineup.get("awayTeam")
-    if not home_section or not away_section:
-        raise ValueError("Match JSON missing lineup information")
+    lineup_available = bool(home_section and away_section)
+
+    if not lineup_available:
+        if kind is not MatchKind.FRIENDLY:
+            raise ValueError(
+                f"Competitive match {general.get('matchId')} ({league_name}) has no lineup section. "
+                f"Re-fetch the match; we do not drop competitive fixtures."
+            )
+        return _build_lineup_less_match(match_json, general, team_id, league_name, kind)
 
     home_id = _as_int(home_section.get("id"))
     away_id = _as_int(away_section.get("id"))
@@ -115,20 +211,7 @@ def _build_match_details(match_json: dict, team_id: int) -> MatchDetails:
             f"({home_section.get('id')} vs {away_section.get('id')})"
         )
 
-    general = match_json.get("general") or {}
-    header_status = (match_json.get("header") or {}).get("status") or {}
-    utc_time_str = header_status.get("utcTime") or general.get("matchTimeUTCDate")
-    if not utc_time_str:
-        raise ValueError("Match JSON missing kickoff time")
-    event_time = datetime.fromisoformat(utc_time_str.replace("Z", "+00:00"))
-
-    match_id_raw = general.get("matchId")
-    if match_id_raw is None:
-        raise ValueError("Match JSON missing matchId")
-    match_id = int(match_id_raw)
-    league_name = general.get("leagueName")
-    if not league_name:
-        raise ValueError("Match JSON missing league name")
+    match_id, event_time = _parse_match_identity(match_json, general)
 
     opponent_team = FotmobTeam(
         id=_as_int(opponent_section.get("id")),
@@ -149,6 +232,8 @@ def _build_match_details(match_json: dict, team_id: int) -> MatchDetails:
         unavailable=unavailable,
         subs_log=subs_log,
         league_name=league_name,
+        kind=kind,
+        lineup_available=True,
     )
 
 
@@ -177,8 +262,8 @@ class FotMobClient:
         self.headless = headless
         self._playwright = None
         self._browser = None
-        self._context: Optional[BrowserContext] = None
-        self._api_context: Optional[APIRequestContext] = None
+        self._context: Optional['BrowserContext'] = None
+        self._api_context: Optional['APIRequestContext'] = None
         self._default_headers = {
             "accept": "*/*",
             "accept-language": "en-GB,en;q=0.9",
@@ -201,7 +286,13 @@ class FotMobClient:
         await self.close()
 
     async def start(self):
-        """Start the Playwright browser and create request context."""
+        """Start the Playwright browser and create request context.
+
+        Playwright is imported here rather than at module scope so that reading stored
+        lineups with `load_saved_match_details` does not require a browser to be installed.
+        """
+        from playwright.async_api import async_playwright
+
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(headless=self.headless)
 
@@ -330,12 +421,18 @@ class FotMobClient:
         self,
         team_id: int,
         team_name: str,
-        season: str = "2025-2026",
+        season: str | None = None,
         matches_limit: Optional[int] = None,
     ) -> list[int]:
-        """Load team fixtures and save new finished matches' details.
-        Returns list of match IDs saved.
+        """Load team fixtures and save every new finished match, friendlies included.
+
+        Pre-season friendlies appear in the same `allFixtures` feed as competitive matches, so
+        no special casing is needed here - `classify_match_kind` separates them at parse time.
+
+        Returns:
+        - Match ids newly written to `data/<season>/lineups/<team_name>/`.
         """
+        season = season or Season.CURRENT
         # Step 1: Load team data via page and capture API JSON
         try:
             team_data = await self.get_team_data(team_id, ccode3="GBR")
@@ -363,9 +460,15 @@ class FotMobClient:
                 except Exception:
                     continue
 
-        # Step 3: Identify finished, past-dated, not-yet-saved fixtures
+        # Step 3: Identify finished, past-dated, in-season, not-yet-saved fixtures.
+        #
+        # FotMob's team feed spans seasons, and its match slugs are not season-scoped: the
+        # pageUrl for last season's "brentford-vs-liverpool" resolves to *this* season's
+        # fixture. Without the season window we silently save the wrong match.
         now = datetime.now(timezone.utc)
+        season_start, season_end = Season.window(season)
         candidates: list[tuple[datetime, int, str]] = []
+        out_of_window = 0
         for fx in fixtures_list:
             match_id = fx.get("id")
             page_url = fx.get("pageUrl")
@@ -377,8 +480,17 @@ class FotMobClient:
             dt = self._parse_utc_time(utc_time)
             if not dt:
                 continue
-            if finished and dt <= now and int(match_id) not in existing_ids:
-                candidates.append((dt, int(match_id), page_url))
+            if not (finished and dt <= now) or int(match_id) in existing_ids:
+                continue
+            if not (season_start <= dt < season_end):
+                out_of_window += 1
+                continue
+            candidates.append((dt, int(match_id), page_url))
+        if out_of_window:
+            logging.info(
+                "[team] %s: ignored %d finished match(es) outside the %s window (%s..%s)",
+                team_name, out_of_window, season, season_start.date(), season_end.date(),
+            )
 
         # Oldest first
         candidates.sort(key=lambda t: t[0])
@@ -394,6 +506,7 @@ class FotMobClient:
         # The match page HTML includes a full `__NEXT_DATA__` payload with `pageProps` that mirrors
         # the matchDetails structure (`general`, `header`, `content`, ...). We parse that instead.
         saved_ids: list[int] = []
+        stale_slugs: list[int] = []
         try:
             for idx, (dt, match_id, page_url) in enumerate(candidates, start=1):
                 logging.info(f"[progress] {team_name}: loading match {idx}/{len(candidates)} "
@@ -411,37 +524,71 @@ class FotMobClient:
                     captured = _extract_next_page_props(html)
                     if not isinstance(captured.get("general"), dict) or not captured.get("general", {}).get("matchId"):
                         raise ValueError("Unexpected pageProps shape (missing general.matchId)")
+                    if not (((captured.get("header") or {}).get("status") or {}).get("finished")):
+                        raise StaleFixtureError(
+                            team_id,
+                            match_id,
+                            f"slug {page_url} served an unfinished match "
+                            f"({captured['general'].get('matchName')})",
+                        )
+                except StaleFixtureError as exc:
+                    # Not data loss: the fixture belongs to another season and its slug no
+                    # longer points at it. Counted and reported, never silently dropped.
+                    stale_slugs.append(match_id)
+                    logging.warning("[match] %s: skipping stale fixture - %s", team_name, exc)
+                    continue
                 except Exception as exc:
                     raise MatchFetchError(
                         team_id,
                         match_id,
                         f"Failed to parse match details from page HTML: {type(exc).__name__}: {exc}",
-¡                    ) from exc
+                    ) from exc
 
-                filepath = os.path.join(base_dir, f"{match_id}.json")
-                try:
-                    with open(filepath, "w") as f:
-                        json.dump(captured, f, indent=2)
-                    logging.info(f"[match] Saved match id={match_id} -> {filepath}")
-                    saved_ids.append(match_id)
-                except Exception as exc:
-                    logging.warning(f"[match] Failed to save match id={match_id}: {exc}")
-            return saved_ids
+                # File under the id the payload reports, not the id we asked for: a reused
+                # slug can land us on a different match, and the filename must never lie.
+                actual_match_id = int(captured["general"]["matchId"])
+                if actual_match_id != match_id:
+                    logging.warning(
+                        "[match] %s: requested id=%s but the page served id=%s (%s). Saving under %s.",
+                        team_name, match_id, actual_match_id,
+                        captured["general"].get("matchName"), actual_match_id,
+                    )
+                filepath = os.path.join(base_dir, f"{actual_match_id}.json")
+                with open(filepath, "w") as f:
+                    json.dump(captured, f, indent=2)
+                logging.info(f"[match] Saved match id={actual_match_id} -> {filepath}")
+                saved_ids.append(actual_match_id)
         except MatchFetchError as exc:
             logging.error("[team] %s: %s", team_name, exc)
-            return saved_ids
-        finally:
-            pass
+
+        if stale_slugs:
+            logging.warning(
+                "[team] %s: %d fixture(s) skipped as stale: %s", team_name, len(stale_slugs), stale_slugs
+            )
+        return saved_ids
 
 def load_saved_match_details(
-    season: str = "2025-2026",
+    season: str | None = None,
     team_filter: Optional[list[str]] = None,
     limit_per_team: Optional[int] = None,
+    kinds: Optional[set[MatchKind]] = None,
 ) -> dict[str, list[MatchDetails]]:
-    """Load saved matchDetails JSON files and convert them into MatchDetails models.
+    """Load saved matchDetails JSON files and convert them into `MatchDetails` models.
+
+    Parameters:
+    - season: Season directory to read. Defaults to `Season.CURRENT`.
+    - team_filter: Restrict to these club directory names. Defaults to every directory present.
+    - limit_per_team: Read at most this many match files per club.
+    - kinds: Keep only these `MatchKind`s. Defaults to all.
+
     Returns:
-        Mapping team_name -> list of MatchDetails sorted by event_time.
+    - Mapping club name -> `MatchDetails` list, sorted by kickoff time.
+
+    Raises:
+    - ValueError: on an unknown club directory, or an empty/corrupt match file. Both mean the
+      dataset is incomplete, which must surface rather than silently shrink the sample.
     """
+    season = season or Season.CURRENT
     base_dir = Path("data") / season / "lineups"
     result: dict[str, list[MatchDetails]] = {}
     if not base_dir.exists():
@@ -450,7 +597,10 @@ def load_saved_match_details(
     selected_teams = team_filter if team_filter is not None else [d.name for d in base_dir.iterdir() if d.is_dir()]
     for team_name in selected_teams:
         if team_name not in TEAM_NAME_TO_ID:
-            raise ValueError(f"Unknown team directory '{team_name}' – no matching FotMob team id in TEAMS")
+            raise ValueError(
+                f"Unknown team directory '{team_name}' - no matching FotMob team id. "
+                f"Add it to FOTMOB_TEAM_IDS in src/fotmob/models/fotmob_metadata.py."
+            )
         team_id = TEAM_NAME_TO_ID[team_name]
         team_path = base_dir / team_name
         if not team_path.is_dir():
@@ -460,48 +610,72 @@ def load_saved_match_details(
             match_files = match_files[:limit_per_team]
         match_list: list[MatchDetails] = []
         for match_file in match_files:
-            match_json = json.loads(match_file.read_text())
+            raw = match_file.read_text()
+            if not raw.strip():
+                raise ValueError(
+                    f"Empty match file {match_file}. A previous capture wrote a truncated snapshot; "
+                    f"delete it and re-run the fetcher for this club."
+                )
             try:
-                details = _build_match_details(match_json, team_id)
-            except ValueError:
-                if match_json['general']['leagueName'] not in ['Club Friendlies']:
-                    raise
-                else:
-                    logging.warning(f'Skipping a match missing essential data: {match_json["general"]}')
-            else:
-                match_list.append(details)
+                match_json = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Corrupt match file {match_file}: {exc}") from exc
+            details = _build_match_details(match_json, team_id)
+            if kinds is not None and details.kind not in kinds:
+                continue
+            match_list.append(details)
         match_list.sort(key=lambda d: d.event_time)
         result[team_name] = match_list
     return result
 
 
 def main():
-    """CLI entry point for testing FotMob API calls."""
+    """CLI entry point for capturing FotMob match details.
+
+    Examples:
+        uv run -m src.fotmob.load                        # every club, current season
+        uv run -m src.fotmob.load --team 'Coventry'      # one club by name
+        uv run -m src.fotmob.load --season 2025-2026     # backfill an earlier season
+    """
     import argparse
 
-    parser = argparse.ArgumentParser(description="Load FotMob match details for configured teams")
-    parser.add_argument("--team-id", type=int, help="Specific FotMob team ID to process (default: all teams in TEAMS)")
+    parser = argparse.ArgumentParser(description="Capture FotMob match details for a season's clubs")
+    parser.add_argument("--team-id", type=int, help="Specific FotMob team id to process")
+    parser.add_argument("--team", type=str, help="Specific club name as used in data/<season>/lineups/")
     parser.add_argument("--matches-limit", type=int, default=None, help="Load earliest N new matches only")
     parser.add_argument("--no-headless", action="store_true", help="Run browser in visible mode")
-    parser.add_argument("--season", type=str, default="2025-2026", help="Season directory name (default: 2025-2026)")
+    parser.add_argument(
+        "--season", type=str, default=Season.CURRENT,
+        help=f"Season directory name (default: {Season.CURRENT})",
+    )
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
+    season_teams = teams_for_season(args.season)
+    if args.team_id and args.team:
+        raise SystemExit("Pass either --team-id or --team, not both.")
+    if args.team:
+        if args.team not in TEAM_NAME_TO_ID:
+            raise SystemExit(
+                f"Unknown club '{args.team}'. Known clubs: {', '.join(sorted(TEAM_NAME_TO_ID))}"
+            )
+        team_ids = [TEAM_NAME_TO_ID[args.team]]
+    elif args.team_id:
+        team_ids = [int(args.team_id)]
+    else:
+        team_ids = list(season_teams.keys())
+
     async def _run():
         async with FotMobClient(headless=not args.no_headless) as client:
-            # Determine team IDs to process
-            team_ids: list[int]
-            if args.team_id:
-                team_ids = [int(args.team_id)]
-            else:
-                team_ids = list(TEAMS.keys())
-
             total_saved = 0
-
-            # Otherwise, iterate teams and save new matches up to limit
             for team_id in team_ids:
-                team_name = TEAMS.get(team_id, f"team-{team_id}")
+                if team_id not in season_teams:
+                    raise SystemExit(
+                        f"FotMob team id {team_id} is not in the {args.season} Premier League roster. "
+                        f"Check SEASON_TEAMS in src/fotmob/models/fotmob_metadata.py."
+                    )
+                team_name = season_teams[team_id]
                 print(f"[team] {team_name} ({team_id})")
                 saved_ids = await client.collect_team_matches(
                     team_id=team_id,

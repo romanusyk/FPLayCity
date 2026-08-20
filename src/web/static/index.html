@@ -1,0 +1,900 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FPLayCity</title>
+<style>
+:root {
+  --bg: #f7f7f8; --panel: #ffffff; --ink: #16181d; --muted: #6b7280; --line: #e3e5e9;
+  --accent: #1f6feb; --good: #1a7f37; --bad: #cf222e; --warn: #9a6700;
+  --chip: #eef1f6; --mine: #dcfce7; --other: #f3f4f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8b949e; --line: #30363d;
+    --accent: #58a6ff; --good: #3fb950; --bad: #f85149; --warn: #d29922;
+    --chip: #21262d; --mine: #12351f; --other: #21262d;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+header {
+  position: sticky; top: 0; z-index: 20; background: var(--panel);
+  border-bottom: 1px solid var(--line); padding: 8px 14px;
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+}
+header h1 { font-size: 14px; margin: 0 8px 0 0; letter-spacing: .02em; }
+nav { display: flex; gap: 4px; }
+nav button {
+  background: none; border: 1px solid transparent; border-radius: 6px;
+  padding: 5px 11px; color: var(--muted); cursor: pointer; font: inherit;
+}
+nav button.on { background: var(--chip); color: var(--ink); border-color: var(--line); }
+select, input, button.act {
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; font: inherit;
+}
+button.act { cursor: pointer; }
+button.act:hover { border-color: var(--accent); }
+.spacer { flex: 1; }
+.muted { color: var(--muted); }
+main { padding: 14px; }
+.cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 12px; min-width: 150px;
+}
+.card .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.card .v { font-size: 17px; font-weight: 600; margin-top: 2px; }
+.card .s { font-size: 11px; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; background: var(--panel); }
+/* Both axes scroll inside the wrapper so that `position: sticky` on the header row is
+   scoped to a container that actually scrolls vertically. With `overflow-x` alone the
+   computed `overflow-y` is also `auto`, and a header stuck to the viewport ends up drawn
+   over the first row. */
+.tablewrap {
+  overflow: auto; border: 1px solid var(--line); border-radius: 8px;
+  max-height: calc(100vh - 270px); min-height: 240px;
+}
+th, td { padding: 5px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+th:nth-child(-n+4), td:nth-child(-n+4) { text-align: left; }
+th {
+  position: sticky; top: 0; background: var(--panel); z-index: 5; cursor: pointer;
+  font-weight: 600; font-size: 11px; text-transform: uppercase; color: var(--muted);
+  letter-spacing: .04em; user-select: none;
+}
+th:hover { color: var(--ink); }
+tbody tr:hover { background: var(--chip); }
+tbody tr.taken { opacity: .42; }
+tbody tr.mine td:first-child { box-shadow: inset 3px 0 0 var(--good); }
+tr.tierbreak td { border-top: 2px solid var(--accent); }
+.name { font-weight: 600; cursor: pointer; }
+.name:hover { color: var(--accent); }
+.pos { display: inline-block; width: 30px; font-size: 11px; color: var(--muted); }
+.flag {
+  display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 4px;
+  background: var(--chip); color: var(--muted); margin-left: 4px;
+}
+.flag.warn { color: var(--warn); }
+.flag.good { color: var(--good); }
+.pos-good { color: var(--good); }
+.pos-bad { color: var(--bad); }
+#panel {
+  position: fixed; top: 0; right: 0; width: min(680px, 100%); height: 100%;
+  background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto;
+  z-index: 40; padding: 16px; display: none; box-shadow: -8px 0 24px rgba(0,0,0,.14);
+}
+#panel.open { display: block; }
+#panel h2 { margin: 0 0 2px; font-size: 18px; }
+.close { position: absolute; top: 12px; right: 14px; }
+.bar { height: 15px; background: var(--accent); border-radius: 3px; min-width: 1px; }
+.bar.neg { background: var(--bad); }
+.waterfall td:nth-child(2) { width: 55%; }
+.strip { display: flex; flex-wrap: wrap; gap: 2px; margin: 6px 0; }
+.cell {
+  width: 15px; height: 15px; border-radius: 3px; background: var(--chip);
+  font-size: 8px; text-align: center; line-height: 15px; color: var(--muted);
+}
+.cell.hit { background: var(--good); color: #fff; }
+.cell.dnp { opacity: .3; }
+.cell.sub { border: 1px dashed var(--muted); }
+section.block { margin-top: 18px; }
+section.block > h3 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); margin: 0 0 6px; font-weight: 600;
+}
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; }
+.notice {
+  background: var(--chip); border: 1px solid var(--line); border-left: 3px solid var(--warn);
+  border-radius: 6px; padding: 9px 12px; margin-bottom: 12px;
+}
+.err { border-left-color: var(--bad); }
+textarea {
+  width: 100%; min-height: 54px; background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px; font: inherit;
+}
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+/* Anything with an explanation behind it is underlined with dots and answers on hover. */
+.hint { border-bottom: 1px dotted currentColor; cursor: help; }
+.glossary { display: grid; grid-template-columns: 170px 1fr; gap: 6px 16px; margin: 0; font-size: 12px; }
+.glossary dt { font-weight: 600; }
+.glossary dd { margin: 0; color: var(--muted); }
+.glossary code { background: var(--chip); border-radius: 3px; padding: 0 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FPLayCity</h1>
+  <nav id="nav"></nav>
+  <span class="spacer"></span>
+  <label class="muted">run <select id="runsel"></select></label>
+  <span id="ctx" class="muted"></span>
+</header>
+<main id="main"></main>
+<div id="panel"><button class="act close" onclick="closePanel()">close</button><div id="panelbody"></div></div>
+
+<script>
+const S = {
+  view: 'draft', config: null, runs: [], runId: null,
+  board: null, sort: null, desc: true, gameFor: 'draft', cmpA: null, cmpB: null,
+  filters: { pos: '', team: '', q: '', hideTaken: false, live: true, picks: null },
+};
+
+const api = async (path) => {
+  const res = await fetch('/api' + path);
+  const body = await res.json().catch(() => ({ detail: res.statusText }));
+  if (!res.ok) throw new Error(body.detail || 'request failed');
+  return body;
+};
+const post = async (path, payload) => {
+  const res = await fetch('/api' + path, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  const body = await res.json().catch(() => ({ detail: res.statusText }));
+  if (!res.ok) throw new Error(body.detail || 'request failed');
+  return body;
+};
+
+// A <template> is used rather than a <div> because the HTML parser silently discards
+// <thead>/<tr>/<th> when they are assigned to a div's innerHTML without a table around them,
+// which turns a whole table into one run of concatenated text.
+const el = (html) => {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  return t.content.firstElementChild;
+};
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const n1 = (v) => (v == null ? '–' : Number(v).toFixed(1));
+const n2 = (v) => (v == null ? '–' : Number(v).toFixed(2));
+const pct = (v) => (v == null ? '–' : Math.round(v * 100) + '%');
+const signed = (v, digits = 1) => (v == null ? '–' : (v > 0 ? '+' : '') + Number(v).toFixed(digits));
+
+/* ------------------------------------------------------------------ help
+   One place where every column and every number is explained in plain words.
+   `[label, explanation]` per key. The key is the column key wherever there is one, so a
+   table header can look up its own hint. Anything added to a table must be added here too:
+   an unexplained column is the same problem as an unexplained number. */
+const HELP = {
+  /* board columns */
+  rank: ['#', 'Place on this list. On the draft board, click the number to mark a player: available → mine → taken by someone else.'],
+  web_name: ['Player', 'Click the name to open the full breakdown of where the points come from.'],
+  team: ['Club', 'The club the player belongs to right now.'],
+  position: ['Pos', 'GKP goalkeeper, DEF defender, MID midfielder, FWD forward. Position decides how much each action is worth.'],
+  vorp: ['VORP', 'Value Over Replacement Player: projected points minus the points of the best player in the same position who will STILL be free at the end of the draft. It is how you compare a forward with a midfielder, because scarcity differs by position. It is deliberately stable: taking a star removes one player from the pool and one pick from those still to come, so the last man standing — and therefore VORP — does not move. Use Δnext for what a single pick costs you.'],
+  drop_next: ['Δnext', 'Points this player has over the NEXT available player in his position. This is the cost of not taking him: a big number means the position falls off a cliff below him, a small number means someone almost as good is still there. Live draft mode only, and it rises as the players below him are taken.'],
+  wait_cost: ['Cost of waiting', 'What each position costs you if you spend this pick elsewhere: the best player available now, minus the best one still there when your turn comes round again. It assumes the picks in between go to the highest VORP on the board, so it is a floor — if your rivals reach for favourites, your target is more likely to survive, not less.'],
+  points: ['Proj', 'Total points we expect over the gameweek range shown at the top of the page. It is the sum of all the parts below.'],
+  points_per_gameweek: ['per GW', 'Projected points divided by the number of matches in the range. Useful when clubs play a different number of games.'],
+  price: ['£', 'Current FPL price, in millions. Only matters in classic FPL — in a draft nothing costs money.'],
+  points_per_million: ['pts/£', 'Projected points divided by price: value for money.'],
+  ownership: ['Own%', 'Share of FPL managers who own this player. A low number with high points is a differential.'],
+
+  /* points components */
+  appearance: ['Appearance', 'Points just for playing: 1 point for any minutes, 2 points for 60 minutes or more. Each is multiplied by how likely it is.'],
+  goals: ['Goals', 'Expected goals per 90 minutes × expected 90s played × fixture difficulty × points per goal (6 for GKP/DEF, 5 for MID, 4 for FWD).'],
+  assists: ['Assists', 'Expected assists per 90 minutes × expected 90s played × fixture difficulty × 3 points.'],
+  clean_sheets: ['Clean sheets', 'Chance of playing 60+ minutes × chance the club concedes nothing × 4 points (GKP/DEF) or 1 point (MID). Forwards get nothing.'],
+  goals_conceded: ['Goals conceded', 'Minus 1 point for every 2 goals the club concedes, for goalkeepers and defenders only. Always negative.'],
+  saves: ['Saves', '1 point per 3 saves, for goalkeepers. Counted in whole steps: 3.0 expected saves is worth 0.66 points, not 1, because 2 saves score nothing.'],
+  defensive_contribution: ['DC', 'Defensive contribution: 2 points in a match where the player makes enough defensive actions — 10 for defenders (tackles plus blocks, interceptions, clearances), 12 for everyone else (those plus recoveries). Goalkeepers cannot score it. Here it is: chance of starting × how often he clears the bar × 2.'],
+  bonus: ['Bonus', 'The 1–3 extra points the best performers get in each match. Taken from his rate last season, not yet predicted from the match itself.'],
+  cards: ['Cards', 'Minus 1 point per yellow card and minus 3 per red, at his rate last season. Always negative.'],
+
+  /* playing time */
+  p_start: ['Start%', 'Chance the player starts the next match. Last season\'s share of starts blended with pre-season line-ups, then multiplied by availability (injury, suspension, or not in the squad).'],
+  role_share: ['Role', 'How big a role he has in the squad, before injuries: the blend of last season and pre-season, with no availability applied yet.'],
+  expected_minutes: ['Expected minutes', 'Average minutes we expect in one match, counting the chance he starts, the chance he is subbed off, and the chance he comes on from the bench.'],
+  preseason_weight: ['Pre-season weight', 'How much of the role comes from pre-season rather than last season. Normally 0.60, but lowered when the club has little pre-season evidence stored. A friendly counts 0.20 against a real match, because managers rotate freely in friendlies.'],
+  transfer_multiplier: ['Transfer discount', 'A cut applied to last season\'s start share when a player has changed club, because it describes the squad he left. Players who moved started 0.48 of early matches against 0.74 for those who stayed, and 0.40 when the new club is clearly stronger.'],
+  availability: ['Availability', 'FPL\'s own flag turned into a number: fit players 1.0, doubts lower, injured or suspended 0.'],
+
+  /* evidence and trust */
+  shrinkage: ['Shrinking', 'When there is little evidence about a player we pull his number toward the average for his position. More minutes or more starts mean we trust his own record more. This is why "n" matters.'],
+  dc_hit_rate: ['DC hit', 'Share of his starts where he reached the defensive threshold. Pulled toward the position average when the sample is small.'],
+  dc_sample: ['n', 'Number of stored starts behind the DC hit rate. A small n means the percentage next to it is mostly the position average, not this player.'],
+  sample_minutes: ['Minutes of evidence', 'Premier League minutes behind his scoring rates. Zero means the rates are the position average and the projection is a placeholder.'],
+
+  /* fixtures and clubs */
+  attack_multiplier: ['Attack ×', 'How easy the fixture is for attackers. Above 1.00 means a weaker opponent than average, below 1.00 a stronger one. Measured from last season\'s results, not from FPL\'s pre-season strength fields, which are all zero in August.'],
+  clean_sheet_probability: ['CS%', 'Chance the club concedes no goals in this match, from both clubs\' scoring and conceding rates.'],
+  replacement: ['Replacement level', 'The points you can get at this position for free. With 4 managers each starting 1 GKP, 4 DEF, 4 MID and 2 FWD, it is the best player still left once every starting slot is filled. VORP is measured against this line, and it rises as players are drafted.'],
+  tier: ['Tier', 'Players are grouped where VORP drops sharply. A blue line means the next player is clearly worse — pick now, or accept the drop.'],
+  live: ['Live draft mode', 'Recalculates replacement level and VORP against the players still available, so the board reacts as picks come off the table. Only VORP, # and tier move — Proj and the component columns come from the saved run and never change. Marking a player "mine" or "other" has the same effect on the numbers: both mean he is gone. With this off, nothing recalculates.'],
+
+  /* runs and scoring */
+  run: ['Run', 'One saved projection. Runs are never changed after they are written, so you can always compare two of them and see exactly what a model change moved.'],
+  method: ['Method', 'The named set of model settings used for this run. Controls differ from the baseline in exactly one setting, so a comparison means something.'],
+  rank_delta: ['Δrank', 'How many places the player moved between the two runs. Positive means he moved up in run B.'],
+  points_delta: ['Δpts', 'Change in projected points between the two runs.'],
+  brier: ['Brier score', 'How good the start probabilities were. Take the difference between the predicted chance and what happened (1 or 0), square it, average it. 0 is perfect, 0.25 is a coin flip. Lower is better.'],
+  mae: ['MAE', 'Mean absolute error: the average size of the miss in points, ignoring whether it was too high or too low. Lower is better.'],
+  your_p_start: ['your p_start', 'The start chance you think is right, saved next to the model\'s, so the disagreement can be scored later.'],
+};
+
+/* Board flags. `[label, style, explanation]` - the chip next to a player's name. */
+const FLAGS = {
+  penalties: ['pens', 'good', 'First-choice penalty taker at his club.'],
+  direct_freekicks: ['fk', 'good', 'First-choice direct free-kick taker.'],
+  corners: ['corners', 'good', 'First-choice corner taker.'],
+  promoted_club: ['promoted', 'warn', 'The club just came up from the Championship. We rate its attack at 0.73 of average until it proves otherwise.'],
+  new_club: ['new club', 'warn', 'He changed club since last season, so last season\'s start share is discounted.'],
+  no_prior_season: ['no PL record', 'warn', 'No Premier League season on record. His rates are the position average scaled by club strength — a placeholder, not a projection.'],
+  no_match_history: ['no history', 'warn', 'No stored match-by-match rows, so hit rates and minutes per start fall back to position defaults.'],
+  club_change_unpriced: ['move unpriced', 'warn', 'He moved, but we cannot rate the club he left (usually a foreign league), so no club-change adjustment was applied.'],
+  no_preseason_start: ['0 friendlies', 'warn', 'He was in the pre-season squad but started none of the matches. That is real evidence, not a gap: of 12 established players (0.60-0.80 start share) who did this last year, 11 started none of GW1-5.'],
+  preseason_role_drop: ['role drop?', 'warn', 'Last season says first choice, pre-season says benched. The model keeps his prior — for a nailed starter, pre-season absence is usually rest — so if a new signing has actually taken his place, this is where the model will be wrong. Worth reading the team news yourself.'],
+};
+
+const helpText = (key) => (HELP[key] ? HELP[key][1] : null);
+const tip = (key) => (helpText(key) ? ` title="${esc(helpText(key))}"` : '');
+/** A label with a dotted underline that explains itself on hover. */
+const hint = (key, label) => {
+  const text = helpText(key);
+  const shown = esc(label != null ? label : (HELP[key] ? HELP[key][0] : key));
+  return text ? `<span class="hint" title="${esc(text)}">${shown}</span>` : shown;
+};
+
+const VIEWS = [
+  ['draft', 'Draft board'], ['fpl', 'FPL board'],
+  ['compare', 'Compare runs'], ['calibration', 'Calibration'], ['feedback', 'Feedback'],
+  ['glossary', 'Glossary'],
+];
+
+function renderNav() {
+  document.getElementById('nav').innerHTML = VIEWS
+    .map(([id, label]) => `<button class="${S.view === id ? 'on' : ''}" onclick="go('${id}')">${label}</button>`)
+    .join('');
+  document.getElementById('ctx').textContent =
+    `${S.config.season} · GW${S.config.next_gameweek}`;
+}
+
+function go(view) { S.view = view; location.hash = '#/' + view; render(); }
+
+function isBoard() { return S.view === 'draft' || S.view === 'fpl'; }
+function game() { return isBoard() ? S.view : S.gameFor; }
+
+async function loadRuns() {
+  const g = game();
+  S.runs = (await api('/runs?game=' + g)).runs;
+  const sel = document.getElementById('runsel');
+  sel.innerHTML = S.runs.map((r) =>
+    `<option value="${r.run_id}">${esc(r.method)} · ${esc(r.created_at.slice(5, 16).replace('T', ' '))}${r.label ? ' · ' + esc(r.label) : ''}</option>`
+  ).join('') || '<option value="">no runs</option>';
+  if (!S.runs.find((r) => r.run_id === S.runId)) S.runId = S.runs.length ? S.runs[0].run_id : null;
+  sel.value = S.runId || '';
+  sel.onchange = () => { S.runId = sel.value; render(); };
+}
+
+async function render() {
+  renderNav();
+  await loadRuns();
+  const main = document.getElementById('main');
+  main.innerHTML = '<p class="muted">loading…</p>';
+  try {
+    if (isBoard()) await renderBoard(main);
+    else if (S.view === 'compare') await renderCompare(main);
+    else if (S.view === 'calibration') await renderCalibration(main);
+    else if (S.view === 'glossary') renderGlossary(main);
+    else await renderFeedback(main);
+  } catch (err) {
+    main.innerHTML = `<div class="notice err"><b>${esc(err.message)}</b></div>`;
+  }
+}
+
+/* ---------------------------------------------------------------- boards */
+
+const DRAFT_COLS = [
+  ['rank', '#'], ['web_name', 'Player'], ['team', 'Club'], ['position', 'Pos'],
+  ['vorp', 'VORP'], ['drop_next', 'Δnext'], ['points', 'Proj'], ['points_per_gameweek', 'per GW'],
+  ['appearance', 'Appear'], ['goals', 'Goals'], ['assists', 'Assists'],
+  ['clean_sheets', 'CS'], ['defensive_contribution', 'DC'], ['bonus', 'Bonus'],
+  ['p_start', 'Start%'], ['dc_hit_rate', 'DC hit'], ['dc_sample', 'n'],
+];
+const FPL_COLS = [
+  ['rank', '#'], ['web_name', 'Player'], ['team', 'Club'], ['position', 'Pos'],
+  ['points', 'Proj'], ['points_per_gameweek', 'per GW'], ['price', '£'],
+  ['points_per_million', 'pts/£'], ['ownership', 'Own%'],
+  ['appearance', 'Appear'], ['goals', 'Goals'], ['assists', 'Assists'],
+  ['clean_sheets', 'CS'], ['defensive_contribution', 'DC'], ['bonus', 'Bonus'],
+  ['p_start', 'Start%'], ['dc_hit_rate', 'DC hit'], ['dc_sample', 'n'],
+];
+
+const cellValue = (row, key) => {
+  if (key in row) return row[key];
+  if (row.components && key in row.components) return row.components[key];
+  if (key === 'p_start') return row.p_start;
+  return null;
+};
+
+async function renderBoard(main) {
+  if (!S.runId) {
+    main.innerHTML = `<div class="notice"><b>No ${S.view} runs yet.</b><br>
+      Generate one: <code>uv run -m src.fpl.project --game ${S.view}</code></div>`;
+    return;
+  }
+  const live = S.view === 'draft' && S.filters.live;
+  const picks = S.filters.picks == null ? '' : `&picks_until_next_turn=${S.filters.picks}`;
+  S.board = await api(
+    `/board?game=${S.view}&run_id=${encodeURIComponent(S.runId)}&live=${live}${picks}`);
+  const head = S.board.run;
+  const cols = S.view === 'draft' ? DRAFT_COLS : FPL_COLS;
+  if (!S.sort) S.sort = S.view === 'draft' ? 'vorp' : 'points';
+
+  main.innerHTML = '';
+  main.append(el(`<div class="notice" style="border-left-color:var(--accent)">
+    <b>${esc(head.method.name)}</b> · GW${head.gameweek_from}–${head.gameweek_to} ·
+    generated ${esc(head.created_at.replace('T', ' '))}
+    ${head.label ? '· ' + esc(head.label) : ''}<br>
+    <span class="muted">${esc(head.method.notes)}</span>
+  </div>`));
+
+  if (S.view === 'draft') {
+    if (S.board.waiting) main.append(waitingCards());
+    main.append(replacementCards());
+  } else main.append(fplCards());
+  main.append(filterBar());
+  main.append(boardTable(cols));
+}
+
+function fplCards() {
+  const rows = S.board.players;
+  const best = (key) => rows.slice().sort((a, b) => b[key] - a[key])[0];
+  const value = best('points_per_million');
+  const differential = rows.filter((r) => r.ownership < 5).sort((a, b) => b.points - a.points)[0];
+  const wrap = el('<div class="cards"></div>');
+  wrap.append(el(`<div class="card"><div class="k">${hint('points_per_million', 'Best value')}</div>
+    <div class="v">${esc(value.web_name)}</div>
+    <div class="s">${n2(value.points_per_million)} pts per £m · £${n1(value.price)}</div></div>`));
+  if (differential) {
+    wrap.append(el(`<div class="card"><div class="k"><span class="hint" title="The highest projected player owned by fewer than 5% of managers. If he scores, you gain on almost everyone.">Top differential</span></div>
+      <div class="v">${esc(differential.web_name)}</div>
+      <div class="s">${n1(differential.points)} pts · ${n1(differential.ownership)}% owned</div></div>`));
+  }
+  wrap.append(el(`<div class="card"><div class="k">Players</div>
+    <div class="v">${rows.length}</div>
+    <div class="s">GW${S.board.run.gameweek_from}–${S.board.run.gameweek_to}</div></div>`));
+  return wrap;
+}
+
+/** What this pick costs at each position, which is the question you face on the clock. */
+function waitingCards() {
+  const w = S.board.waiting;
+  const wrap = el('<div class="cards"></div>');
+  const ordered = Object.entries(w.positions)
+    .sort((a, b) => (b[1].cost ?? -1) - (a[1].cost ?? -1));
+  ordered.forEach(([pos, c]) => {
+    const urgent = c.cost != null && c.cost >= 3;
+    wrap.append(el(`<div class="card">
+      <div class="k">${hint('wait_cost', pos + ' if you wait')}</div>
+      <div class="v ${urgent ? 'pos-bad' : ''}">${c.cost == null ? 'pool empty' : '−' + n1(c.cost)}</div>
+      <div class="s">${esc(c.best_name)} ${n1(c.best)}
+        ${c.survives ? '<b>should last</b>' : '→ ' + esc(c.then_name || '–') + ' ' + n1(c.then)}</div>
+    </div>`));
+  });
+  const bar = el(`<div class="row" style="margin:-4px 0 10px">
+    <span class="muted">${hint('wait_cost', 'Cost of waiting')} assumes the next
+      <input id="wpicks" type="number" min="0" max="60" value="${w.picks_until_next_turn}" style="width:56px">
+      picks go to the highest VORP on the board.</span></div>`);
+  setTimeout(() => {
+    bar.querySelector('#wpicks').onchange = (e) => {
+      S.filters.picks = Math.max(0, Number(e.target.value) || 0);
+      render();
+    };
+  });
+  const holder = el('<div></div>');
+  holder.append(wrap, bar);
+  return holder;
+}
+
+function replacementCards() {
+  const wrap = el('<div class="cards"></div>');
+  const levels = S.board.replacement_level;
+  Object.keys(levels).forEach((pos) => {
+    const lv = levels[pos];
+    wrap.append(el(`<div class="card">
+      <div class="k">${hint('replacement', pos + ' replacement')}</div>
+      <div class="v">${n1(lv.points)}</div>
+      <div class="s" title="The best ${pos} still available once every starting slot in the league is filled. VORP for a ${pos} is his points minus this.">${esc(lv.web_name || '–')} · ${lv.remaining_picks} picks left${lv.is_exhausted ? ' · <b>pool exhausted</b>' : ''}</div>
+    </div>`));
+  });
+  if (S.board.draft) {
+    wrap.append(el(`<div class="card">
+      <div class="k">Draft</div>
+      <div class="v">${S.board.draft.taken} taken</div>
+      <div class="s">${S.board.draft.mine.length} mine · ${S.board.draft.managers} managers</div>
+    </div>`));
+  }
+  return wrap;
+}
+
+function filterBar() {
+  const bar = el('<div class="row"></div>');
+  const posOptions = ['<option value="">all positions</option>']
+    .concat(S.config.positions.map((p) => `<option ${S.filters.pos === p ? 'selected' : ''}>${p}</option>`)).join('');
+  const teamOptions = ['<option value="">all clubs</option>']
+    .concat(S.config.teams.map((t) => `<option ${S.filters.team === t ? 'selected' : ''}>${t}</option>`)).join('');
+  bar.innerHTML = `
+    <input id="fq" placeholder="search name" value="${esc(S.filters.q)}" style="width:150px">
+    <select id="fpos">${posOptions}</select>
+    <select id="fteam">${teamOptions}</select>
+    ${S.view === 'draft' ? `
+      <label><input type="checkbox" id="flive" ${S.filters.live ? 'checked' : ''}> ${hint('live', 'live draft mode')}</label>
+      <label><input type="checkbox" id="fhide" ${S.filters.hideTaken ? 'checked' : ''}> <span class="hint" title="Hides everyone already marked as taken. It only changes what you see — replacement level counts them either way.">hide taken</span></label>
+      <button class="act" onclick="resetDraft()">reset picks</button>` : ''}
+    <span class="spacer"></span>
+    <span class="muted" id="count"></span>`;
+  setTimeout(() => {
+    bar.querySelector('#fq').oninput = (e) => { S.filters.q = e.target.value; redrawRows(); };
+    bar.querySelector('#fpos').onchange = (e) => { S.filters.pos = e.target.value; redrawRows(); };
+    bar.querySelector('#fteam').onchange = (e) => { S.filters.team = e.target.value; redrawRows(); };
+    const live = bar.querySelector('#flive');
+    if (live) live.onchange = (e) => { S.filters.live = e.target.checked; render(); };
+    const hide = bar.querySelector('#fhide');
+    if (hide) hide.onchange = (e) => { S.filters.hideTaken = e.target.checked; redrawRows(); };
+  });
+  return bar;
+}
+
+function boardTable(cols) {
+  const wrap = el('<div class="tablewrap"><table><thead><tr></tr></thead><tbody id="rows"></tbody></table></div>');
+  const tr = wrap.querySelector('thead tr');
+  cols.forEach(([key, label]) => {
+    const th = el(`<th data-k="${key}">${hint(key, label)}${S.sort === key ? (S.desc ? ' ▾' : ' ▴') : ''}</th>`);
+    th.onclick = () => {
+      if (S.sort === key) S.desc = !S.desc; else { S.sort = key; S.desc = true; }
+      renderBoard(document.getElementById('main'));
+    };
+    tr.append(th);
+  });
+  setTimeout(redrawRows);
+  return wrap;
+}
+
+function visibleRows() {
+  const f = S.filters;
+  const q = f.q.trim().toLowerCase();
+  return S.board.players.filter((row) =>
+    (!f.pos || row.position === f.pos) &&
+    (!f.team || row.team === f.team) &&
+    (!q || row.web_name.toLowerCase().includes(q)) &&
+    (!f.hideTaken || !row.owner)
+  );
+}
+
+function redrawRows() {
+  const body = document.getElementById('rows');
+  if (!body) return;
+  const cols = S.view === 'draft' ? DRAFT_COLS : FPL_COLS;
+  const rows = visibleRows();
+  if (S.sort !== 'rank') {
+    rows.sort((a, b) => {
+      const x = cellValue(a, S.sort), y = cellValue(b, S.sort);
+      if (typeof x === 'string') return S.desc ? y.localeCompare(x) : x.localeCompare(y);
+      return S.desc ? (y ?? -1e9) - (x ?? -1e9) : (x ?? 1e9) - (y ?? 1e9);
+    });
+  }
+  body.innerHTML = '';
+  let lastTier = null;
+  rows.forEach((row) => {
+    const tierBreak = S.view === 'draft' && S.sort === 'rank' && row.tier && row.tier !== lastTier && lastTier !== null;
+    lastTier = row.tier;
+    const tr = el(`<tr class="${row.owner ? 'taken' : ''} ${row.owner === 'mine' ? 'mine' : ''} ${tierBreak ? 'tierbreak' : ''}"></tr>`);
+    cols.forEach(([key]) => tr.append(cell(row, key)));
+    body.append(tr);
+  });
+  const count = document.getElementById('count');
+  if (count) count.textContent = `${rows.length} of ${S.board.players.length} players`;
+}
+
+function cell(row, key) {
+  const td = document.createElement('td');
+  if (key === 'web_name') {
+    td.innerHTML = `<span class="name">${esc(row.web_name)}</span>${flagChips(row)}`;
+    td.querySelector('.name').onclick = () => openPlayer(row.player_id);
+    return td;
+  }
+  if (key === 'rank') {
+    td.textContent = row.rank ?? '';
+    if (S.view === 'draft') {
+      td.style.cursor = 'pointer';
+      td.title = 'Click to cycle: available → mine (✓) → taken by someone else (×) → available.\n'
+        + 'In live draft mode either kind of pick raises replacement level and lowers VORP for '
+        + 'everyone left in that position. "Mine" only adds the green bar — it changes no number.';
+      td.onclick = () => cyclePick(row);
+      if (row.owner) td.textContent = row.owner === 'mine' ? '✓' : '×';
+    }
+    return td;
+  }
+  if (key === 'position' || key === 'team') { td.textContent = row[key]; return td; }
+  if (key === 'p_start' || key === 'dc_hit_rate') { td.textContent = pct(row[key]); return td; }
+  if (key === 'dc_sample') { td.textContent = row[key]; return td; }
+  const value = cellValue(row, key);
+  td.textContent = key === 'ownership' || key === 'price' ? n1(value) : n2(value);
+  if (key === 'vorp' && value != null) td.className = value >= 0 ? 'pos-good' : 'pos-bad';
+  return td;
+}
+
+const STATUS_MEANING = {
+  d: 'a doubt — FPL flags him as not certain to play',
+  i: 'injured', s: 'suspended', u: 'unavailable', n: 'not in the squad',
+};
+
+function flagChips(row) {
+  return (row.flags || []).map((flag) => {
+    const status = flag.startsWith('status_') ? flag.slice(7) : null;
+    const unknown = status
+      ? ['status ' + status, 'warn',
+         `FPL availability flag "${status}": ${STATUS_MEANING[status] || 'not fully available'}. `
+         + 'Expected minutes are reduced to match.']
+      : [flag.replace(/_/g, ' '), 'warn', ''];
+    const [label, kind, why] = FLAGS[flag] || unknown;
+    return `<span class="flag ${kind}" title="${esc(why)}">${esc(label)}</span>`;
+  }).join('');
+}
+
+async function cyclePick(row) {
+  const next = { undefined: 'mine', null: 'mine', mine: 'other', other: null }[row.owner ?? 'null'];
+  await post('/draft/pick', { player_id: row.player_id, owner: next });
+  await renderBoard(document.getElementById('main'));
+}
+
+async function resetDraft() {
+  if (!confirm('Clear every pick from the live draft board?')) return;
+  await post('/draft/reset', {});
+  await renderBoard(document.getElementById('main'));
+}
+
+/* ---------------------------------------------------------- player panel */
+
+async function openPlayer(playerId) {
+  const panel = document.getElementById('panel');
+  const body = document.getElementById('panelbody');
+  panel.classList.add('open');
+  body.innerHTML = '<p class="muted">loading…</p>';
+  const g = isBoard() ? S.view : 'draft';
+  const data = await api(`/player?player_id=${playerId}&game=${g}&run_id=${encodeURIComponent(S.runId)}`);
+  body.innerHTML = '';
+  body.append(playerHeader(data));
+  body.append(waterfall(data.player));
+  body.append(inputsBlock(data.player));
+  body.append(fixturesBlock(data.player));
+  body.append(historyBlock(data));
+  body.append(feedbackForm(data));
+}
+
+function closePanel() { document.getElementById('panel').classList.remove('open'); }
+
+function playerHeader(data) {
+  const p = data.player;
+  const prior = p.prior_season;
+  return el(`<div>
+    <h2>${esc(p.web_name)} <span class="muted">${p.position} · ${esc(p.team)} · £${n1(p.price)}</span></h2>
+    <div class="muted">${n1(p.points)} projected points over GW${data.run.gameweek_from}–${data.run.gameweek_to}
+      · ${n2(p.points_per_gameweek)} per gameweek · VORP ${signed(p.vorp)}</div>
+    <div style="margin-top:6px">${flagChips(p)}</div>
+    ${data.news ? `<div class="notice" style="margin-top:8px">FPL news: ${esc(data.news)}</div>` : ''}
+    ${prior ? `<div class="muted" style="margin-top:6px">${esc(prior.season)} at ${esc(prior.club || '?')},
+      full season: ${prior.starts} starts, ${prior.minutes} min, ${prior.total_points} pts,
+      ${prior.goals_scored}G ${prior.assists}A · source <code>${esc(prior.source)}</code>.
+      Rates come from these totals; hit rates and minutes-per-start come from the per-match
+      rows below, which may cover fewer gameweeks.</div>`
+    : '<div class="notice" style="margin-top:6px">No prior Premier League season on record. Rates fall back to the position average — treat this projection as a placeholder.</div>'}
+  </div>`);
+}
+
+function waterfall(p) {
+  const entries = Object.entries(p.components).filter(([, v]) => Math.abs(v) > 0.005);
+  const scale = Math.max(...entries.map(([, v]) => Math.abs(v)), 1);
+  const rows = entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([name, value]) => `
+    <tr><td>${hint(name, name.replace(/_/g, ' '))}</td>
+      <td><div class="bar ${value < 0 ? 'neg' : ''}" style="width:${Math.abs(value) / scale * 100}%"></div></td>
+      <td>${signed(value, 2)}</td>
+      <td class="muted">${Math.round(value / p.points * 100)}%</td></tr>`).join('');
+  return el(`<section class="block"><h3>Where the points come from</h3>
+    <div class="muted" style="margin-bottom:4px">Every part of the FPL scoring rules, worked out
+      separately and added up. Hover a name to see how it is calculated.</div>
+    <table class="waterfall">${rows}
+    <tr><td><b>total</b></td><td></td><td><b>${n1(p.points)}</b></td><td></td></tr></table></section>`);
+}
+
+/** Why the pre-season weight is what it is. Two independent reductions, so name the one that bites. */
+function weightReason(m) {
+  const reasons = [];
+  if (m.moved) {
+    reasons.push('flat weight because he changed club — pre-season is the only look at this squad');
+  } else if (m.prior_start_share != null && m.prior_start_share >= 0.8) {
+    reasons.push('low because last season says first choice, and a nailed player rests in pre-season');
+  } else if (m.prior_start_share != null && m.prior_start_share < 0.3) {
+    reasons.push('low because a fringe player\'s friendly starts say little about league starts');
+  } else if (m.prior_start_share != null) {
+    reasons.push('high because his place was open, so pre-season is the manager deciding it');
+  }
+  if (m.preseason_matches && m.preseason_matches <= 2) {
+    reasons.push('and cut further because the club has thin evidence');
+  }
+  return reasons.length ? ', ' + reasons.join(', ') : '';
+}
+
+function inputsBlock(p) {
+  const m = p.inputs.minutes, r = p.inputs.rates, d = p.inputs.defensive_contribution;
+  const dc = d.threshold === 0
+    ? '<dd>not available to goalkeepers</dd>'
+    : `<dd>${pct(d.hit_rate)} per start
+        <span class="muted">(observed ${d.observed_hit_rate == null ? 'n/a' : pct(d.observed_hit_rate)},
+        rate implies ${pct(d.implied_hit_rate)}, ${hint('shrinkage', 'shrunk')} ${pct(1 - d.shrinkage_weight)} toward it,
+        n=${d.starts} starts, ${n1(d.actions_per_start)} actions/start vs threshold ${d.threshold})</span></dd>`;
+  return el(`<section class="block"><h3>Inputs, with their sample sizes</h3>
+    <div class="muted" style="margin-bottom:6px">The numbers the parts above are built from.
+      Sample sizes are shown next to each one because a rate from 3 matches and a rate from 30
+      are not the same kind of number.</div><dl class="kv">
+    <dt>${hint('p_start', 'p(start)')}</dt><dd>${pct(m.p_start)}
+      <span class="muted">= ${hint('role_share', 'role')} ${pct(m.role_share)} × ${hint('availability', 'availability')} ${pct(m.availability)} (${esc(m.status_meaning)})</span></dd>
+    <dt>${hint('preseason_weight', 'role from')}</dt><dd>${m.prior_start_share == null ? '<b>no prior season</b>' : 'last season ' + pct(m.prior_start_share)}
+      ${m.transfer_multiplier != null && m.transfer_multiplier < 1
+        ? `<span class="muted">× ${n2(m.transfer_multiplier)} ${hint('transfer_multiplier', 'transfer discount')}</span>` : ''}
+      · ${m.preseason_start_share == null
+        ? 'no pre-season matches stored'
+        : `pre-season ${pct(m.preseason_start_share)} of ${m.preseason_matches} match(es)`}
+      <span class="muted">— blended at ${pct(m.preseason_weight_used)} pre-season${
+        weightReason(m)}</span></dd>
+    <dt>${hint('expected_minutes', 'expected minutes')}</dt><dd>${n1(m.expected_minutes)}
+      <span class="muted">(${n1(m.minutes_per_start)} per start, ${pct(m.full_match_rate)} reach 60', ${pct(m.cameo_rate)} cameo when benched, n=${m.sample_starts})</span></dd>
+    <dt>${hint('defensive_contribution', 'defensive contribution')}</dt>${dc}
+    <dt><span class="hint" title="Expected goals (xG) and expected assists (xA) per 90 minutes: the quality of the chances he gets and creates, which predicts future scoring better than goals already scored.">attacking rates</span></dt><dd>${n2(r.xg_per_90)} xG / ${n2(r.xa_per_90)} xA per 90
+      ${r.sample_minutes === 0
+        ? '<span class="muted">— <b>no Premier League minutes at all</b>: this is the position average scaled by the club\'s attack rating, a placeholder rather than a projection</span>'
+        : `<span class="muted">(${hint('shrinkage', 'shrunk')} ${pct(1 - r.shrinkage_weight)} toward the position average, ${hint('sample_minutes', r.sample_minutes + ' minutes of evidence')})</span>`}</dd>
+    <dt>${hint('bonus', 'bonus')}</dt><dd>${n2(r.bonus_per_90)} per 90</dd>
+  </dl></section>`);
+}
+
+function fixturesBlock(p) {
+  const rows = p.fixtures.map((f) => `<tr>
+    <td>GW${f.gameweek}</td><td>${f.at_home ? 'v' : '@'} ${esc(f.opponent)}</td>
+    <td>${pct(f.clean_sheet_probability)}</td><td>${n2(f.attack_multiplier)}</td><td>${n2(f.points)}</td></tr>`).join('');
+  return el(`<section class="block"><h3>Fixtures</h3><table>
+    <tr><th><span class="hint" title="Gameweek. One row per match his club plays in the range — two rows if they play twice, none if they are blank.">GW</span></th>
+      <th><span class="hint" title="v = at home, @ = away.">Opponent</span></th>
+      <th>${hint('clean_sheet_probability', 'CS%')}</th><th>${hint('attack_multiplier', 'Attack ×')}</th>
+      <th><span class="hint" title="Projected points from this one match. These add up to Proj.">Points</span></th></tr>${rows}</table></section>`);
+}
+
+function historyBlock(data) {
+  if (!data.history.length) {
+    return el('<section class="block"><h3>Per-match history</h3><div class="notice">No stored matches for this player.</div></section>');
+  }
+  const cells = data.history.map((m) => {
+    const cls = !m.minutes ? 'cell dnp' : (m.defensive_hit ? 'cell hit' : (m.started ? 'cell' : 'cell sub'));
+    const title = `${m.season} GW${m.gameweek} ${m.was_home ? 'v' : '@'} ${m.opponent} · ${m.minutes}' · `
+      + `${m.points} pts · ${m.defensive_actions} def actions${m.defensive_hit ? ' (hit)' : ''}`;
+    return `<div class="${cls}" title="${esc(title)}">${m.points}</div>`;
+  }).join('');
+  const coverage = Object.entries(data.history_coverage)
+    .map(([season, range]) => `${season} GW${range[0]}–${range[1]}`).join(', ');
+  return el(`<section class="block"><h3>Per-match history</h3>
+    <div class="muted">Green = cleared the defensive threshold; dashed = came off the bench; faded = did not play.
+      Numbers are points. Hover for detail.</div>
+    <div class="strip">${cells}</div>
+    <div class="muted">Coverage: ${esc(coverage)} — ${data.history.length} matches.</div></section>`);
+}
+
+function feedbackForm(data) {
+  const options = S.config.reasons.map((r) => `<option value="${r}">${r.replace(/_/g, ' ')}</option>`).join('');
+  const existing = data.feedback.map((f) => `<li class="muted">${esc(f.created_at.slice(0, 16))} ·
+    <b>${esc(f.reason)}</b> ${esc(f.note)}${f.your_p_start != null ? ' · your p_start ' + pct(f.your_p_start) : ''}</li>`).join('');
+  const block = el(`<section class="block"><h3>Tell me what is wrong</h3>
+    <div class="row">
+      <select id="fbreason">${options}</select>
+      <input id="fbp" placeholder="your p_start 0–1" style="width:135px">
+    </div>
+    <textarea id="fbnote" placeholder="why?"></textarea>
+    <div class="row" style="margin-top:8px"><button class="act" id="fbsave">save feedback</button>
+      <span id="fbmsg" class="muted"></span></div>
+    ${existing ? `<ul style="padding-left:18px">${existing}</ul>` : ''}
+  </section>`);
+  setTimeout(() => {
+    block.querySelector('#fbsave').onclick = async () => {
+      const raw = block.querySelector('#fbp').value.trim();
+      const msg = block.querySelector('#fbmsg');
+      try {
+        await post('/feedback', {
+          run_id: data.run.run_id, game: data.run.game, player_id: data.player.player_id,
+          reason: block.querySelector('#fbreason').value,
+          note: block.querySelector('#fbnote').value,
+          your_p_start: raw === '' ? null : Number(raw),
+        });
+        msg.textContent = 'saved';
+        openPlayer(data.player.player_id);
+      } catch (err) { msg.textContent = err.message; }
+    };
+  });
+  return block;
+}
+
+/* -------------------------------------------------------------- compare */
+
+async function renderCompare(main) {
+  main.innerHTML = '';
+  const runs = (await api('/runs?game=' + S.gameFor)).runs;
+  if (runs.length < 2) {
+    main.append(el(`<div class="notice"><b>Need two ${S.gameFor} runs to compare.</b><br>
+      Try: <code>uv run -m src.fpl.project --game ${S.gameFor} --method v0-no-preseason</code></div>`));
+    return;
+  }
+  S.cmpA = S.cmpA && runs.find((r) => r.run_id === S.cmpA) ? S.cmpA : runs[1].run_id;
+  S.cmpB = S.cmpB && runs.find((r) => r.run_id === S.cmpB) ? S.cmpB : runs[0].run_id;
+  const opts = (sel) => runs.map((r) =>
+    `<option value="${r.run_id}" ${r.run_id === sel ? 'selected' : ''}>${esc(r.method)} · ${esc(r.created_at.slice(5, 16))}</option>`).join('');
+  const bar = el(`<div class="row">
+    <select id="cg"><option value="draft" ${S.gameFor === 'draft' ? 'selected' : ''}>draft</option>
+      <option value="fpl" ${S.gameFor === 'fpl' ? 'selected' : ''}>fpl</option></select>
+    baseline <select id="ca">${opts(S.cmpA)}</select>
+    against <select id="cb">${opts(S.cmpB)}</select></div>`);
+  main.append(bar);
+  bar.querySelector('#cg').onchange = (e) => { S.gameFor = e.target.value; S.cmpA = S.cmpB = null; render(); };
+  bar.querySelector('#ca').onchange = (e) => { S.cmpA = e.target.value; render(); };
+  bar.querySelector('#cb').onchange = (e) => { S.cmpB = e.target.value; render(); };
+
+  const d = await api(`/compare?game=${S.gameFor}&a=${encodeURIComponent(S.cmpA)}&b=${encodeURIComponent(S.cmpB)}`);
+  const diff = Object.entries(d.param_diff);
+  main.append(el(`<div class="notice" style="border-left-color:var(--accent)">
+    <b>${esc(d.a.method.name)}</b> → <b>${esc(d.b.method.name)}</b> ·
+    <span class="hint" title="Average number of places a player moved, counting every move as positive. A big number means the change reshuffled the board; a small one means it barely mattered.">mean absolute rank change</span> ${d.mean_abs_rank_delta} · ${d.unchanged} players unmoved<br>
+    ${diff.length
+      ? '<span class="muted">parameters changed: ' + diff.map(([k, v]) => `${esc(k)} ${esc(v.a)}→${esc(v.b)}`).join(', ') + '</span>'
+      : '<span class="muted">identical parameters — any difference comes from the data snapshots</span>'}
+  </div>`));
+
+  const table = (title, entries) => {
+    const rows = entries.map((e) => `<tr>
+      <td class="name" onclick="openPlayer(${e.player_id})">${esc(e.web_name)}</td>
+      <td>${esc(e.team)}</td><td>${esc(e.position)}</td>
+      <td>${e.rank_a}</td><td>${e.rank_b}</td>
+      <td class="${e.rank_delta > 0 ? 'pos-good' : 'pos-bad'}">${signed(e.rank_delta, 0)}</td>
+      <td>${n1(e.points_a)}</td><td>${n1(e.points_b)}</td>
+      <td class="${e.points_delta > 0 ? 'pos-good' : 'pos-bad'}">${signed(e.points_delta, 1)}</td></tr>`).join('');
+    return el(`<section class="block"><h3>${title}</h3><div class="tablewrap"><table>
+      <tr><th>${hint('web_name', 'Player')}</th><th>Club</th><th>${hint('position', 'Pos')}</th>
+        <th><span class="hint" title="His place in the baseline run (A).">rank A</span></th>
+        <th><span class="hint" title="His place in the run you are testing (B).">rank B</span></th>
+        <th>${hint('rank_delta', 'Δrank')}</th>
+        <th>pts A</th><th>pts B</th><th>${hint('points_delta', 'Δpts')}</th></tr>${rows}</table></div></section>`);
+  };
+  main.append(table('Biggest risers', d.risers));
+  main.append(table('Biggest fallers', d.fallers));
+}
+
+/* ---------------------------------------------------------- calibration */
+
+async function renderCalibration(main) {
+  main.innerHTML = '';
+  let path = `/calibration?game=${S.gameFor}`;
+  if (S.runId) path += `&run_id=${encodeURIComponent(S.runId)}`;
+  const d = await api(path);
+  if (d.message) { main.append(el(`<div class="notice">${esc(d.message)}</div>`)); return; }
+  main.append(el(`<div class="notice" style="border-left-color:var(--accent)">
+    How well this run matched what actually happened, once gameweeks finished. Green means the
+    model beat the baseline — the dumbest sensible guess. Losing to the baseline means the extra
+    modelling is not earning its keep. <b>Lower is better everywhere on this page.</b></div>`));
+  const cards = el('<div class="cards"></div>');
+  const METRIC_HELP = { p_start: 'brier', points: 'mae' };
+  Object.entries(d.components).forEach(([name, c]) => {
+    const better = c.model != null && c.baseline != null && c.model < c.baseline;
+    cards.append(el(`<div class="card">
+      <div class="k">${hint(name, name)}</div>
+      <div class="v ${better ? 'pos-good' : 'pos-bad'}">${n2(c.model)}</div>
+      <div class="s"><span class="hint" title="What a model with no player knowledge would have scored. Beating it is the minimum bar.">baseline</span>
+        ${n2(c.baseline)} — ${esc(c.baseline_description)}<br>${hint(METRIC_HELP[name], c.metric)}</div>
+    </div>`));
+  });
+  main.append(cards);
+  const rows = d.gameweeks.map((g) =>
+    `<tr><td>GW${g.gameweek}</td><td>${g.players}</td><td>${n2(g.p_start_brier)}</td><td>${n2(g.points_mae)}</td></tr>`).join('');
+  main.append(el(`<div class="tablewrap"><table>
+    <tr><th>Gameweek</th><th><span class="hint" title="How many player-matches were scored in this gameweek.">Players</span></th>
+      <th>${hint('brier', 'p_start Brier')}</th><th>${hint('mae', 'points MAE')}</th></tr>${rows}</table></div>`));
+}
+
+/* ------------------------------------------------------------- feedback */
+
+async function renderFeedback(main) {
+  const d = await api('/feedback');
+  main.innerHTML = '';
+  if (!d.feedback.length) {
+    main.append(el('<div class="notice">No feedback recorded yet. Open a player from a board and disagree with it.</div>'));
+    return;
+  }
+  const rows = d.feedback.map((f) => `<tr>
+    <td>${esc(f.created_at.replace('T', ' ').slice(0, 16))}</td>
+    <td class="name" onclick="openPlayer(${f.player_id})">${esc(f.web_name)}</td>
+    <td>GW${f.gameweek}</td><td>${esc(f.reason)}</td>
+    <td>${f.your_p_start == null ? '–' : pct(f.your_p_start)}</td>
+    <td>${f.model_p_start == null ? '–' : pct(f.model_p_start)}</td>
+    <td>${n1(f.model_points)}</td>
+    <td style="white-space:normal">${esc(f.note)}</td>
+    <td class="muted">${esc(f.run_id)}</td></tr>`).join('');
+  main.append(el(`<div class="tablewrap"><table>
+    <tr><th>When</th><th>${hint('web_name', 'Player')}</th><th>GW</th>
+      <th><span class="hint" title="The kind of disagreement, so entries can be grouped later.">Reason</span></th>
+      <th>${hint('your_p_start', 'your p_start')}</th>
+      <th><span class="hint" title="What the model said at the time. Saved with your value so the two can be scored against what actually happened.">model p_start</span></th>
+      <th>model pts</th><th>Note</th><th>${hint('run', 'Run')}</th></tr>${rows}</table></div>`));
+}
+
+/* ------------------------------------------------------------- glossary */
+
+/** The same explanations the hover hints use, grouped so they can be read straight through. */
+const GLOSSARY_GROUPS = [
+  ['Reading the board', ['rank', 'web_name', 'position', 'points', 'points_per_gameweek', 'vorp', 'drop_next', 'wait_cost', 'replacement', 'tier', 'live']],
+  ['Where the points come from', ['appearance', 'goals', 'assists', 'clean_sheets', 'defensive_contribution', 'saves', 'goals_conceded', 'bonus', 'cards']],
+  ['Playing time', ['p_start', 'role_share', 'availability', 'expected_minutes', 'preseason_weight', 'transfer_multiplier']],
+  ['How much to trust a number', ['shrinkage', 'dc_hit_rate', 'dc_sample', 'sample_minutes']],
+  ['Fixtures and clubs', ['clean_sheet_probability', 'attack_multiplier']],
+  ['Classic FPL only', ['price', 'points_per_million', 'ownership']],
+  ['Runs, comparison and scoring', ['run', 'method', 'rank_delta', 'points_delta', 'brier', 'mae', 'your_p_start']],
+];
+
+function renderGlossary(main) {
+  main.innerHTML = '';
+  main.append(el(`<div class="notice" style="border-left-color:var(--accent)">
+    Every column and every number in one place. The same text appears when you hover any
+    <span class="hint" title="Like this one.">dotted label</span> in the app.</div>`));
+  GLOSSARY_GROUPS.forEach(([title, keys]) => {
+    const rows = keys.map((key) =>
+      `<dt>${esc(HELP[key][0])}</dt><dd>${esc(HELP[key][1])}</dd>`).join('');
+    main.append(el(`<section class="block"><h3>${esc(title)}</h3>
+      <dl class="glossary">${rows}</dl></section>`));
+  });
+  const flags = Object.values(FLAGS)
+    .map(([label, kind, why]) => `<dt><span class="flag ${kind}">${esc(label)}</span></dt><dd>${esc(why)}</dd>`)
+    .join('');
+  main.append(el(`<section class="block"><h3>Flags next to a player's name</h3>
+    <dl class="glossary">${flags}
+      <dt><span class="flag warn">status …</span></dt>
+      <dd>FPL's own availability flag: i injured, d a doubt, s suspended, u unavailable,
+        n not in the squad. Expected minutes are reduced to match.</dd></dl></section>`));
+}
+
+/* ----------------------------------------------------------------- boot */
+
+(async function boot() {
+  S.config = await api('/config');
+  const hash = location.hash.replace('#/', '');
+  if (VIEWS.some(([id]) => id === hash)) S.view = hash;
+  window.onhashchange = () => {
+    const view = location.hash.replace('#/', '');
+    if (view && view !== S.view && VIEWS.some(([id]) => id === view)) { S.view = view; render(); }
+  };
+  document.onkeydown = (e) => { if (e.key === 'Escape') closePanel(); };
+  render();
+})();
+</script>
+</body>
+</html>

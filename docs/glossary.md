@@ -193,3 +193,87 @@ This feeds into the overall **expected points** for defenders and defensively ac
 - Often computed **per player per fixture**, then **aggregated across upcoming fixtures / Gameweeks**.
 
 Most ranking and decision logic in this project is expressed in terms of **xPts**, adjusted by **minutes and availability risk**.
+
+## Projection and Draft-Board Vocabulary
+
+Terms that are ours rather than the game's — they appear as columns in the review app and as
+symbols in `src/fpl/projection/`. Definitions here are deliberately short; each names the
+canonical source. The same text, written for reading on the spot, is in the app under
+`#/glossary` and on hover over any dotted label.
+
+### p(start), role share, availability
+
+**p(start)** is the probability a player starts a given match, and it gates almost everything else
+— a clean sheet needs 60 minutes, a defensive contribution needs a start. It factors as
+**role share** (his standing in the squad, blended from last season and pre-season) × **availability**
+(FPL's own injury and suspension feed). Keeping them separate is what lets the app say "first
+choice, but injured" as the two facts it is.
+
+Model: `MinutesModel`, `MinutesEstimate` in `src/fpl/projection/minutes.py`.
+
+### Pre-season role curve
+
+How much pre-season outweighs last season is **not one number**. It depends on how nailed the
+player was: for a first-choice player pre-season absence is rest, for a squad player it is the
+manager deciding an open place, and for a fringe player a friendly start is cheap. The weight is
+therefore a curve over last season's start share — low at both ends, near 1.0 in the middle.
+Players who changed club are exempt.
+
+Constant and the measurement behind it: `PRESEASON_ROLE_KNOTS` in `src/fpl/projection/minutes.py`.
+
+### Shrinkage
+
+Pulling a player's own rate toward the average for his position when there is little evidence
+behind it. Every rate in the projection is shrunk, and the app always shows the sample size next
+to the number so a rate from 3 matches is not mistaken for a rate from 30.
+
+### Replacement level
+
+The points available at a position **for free** — the best player who will still be undrafted once
+every starting slot in the league is filled. Priced against *starting* slots (1 GKP, 4 DEF, 4 MID,
+2 FWD per manager), not roster slots: your second keeper scores you nothing, so measuring a
+starting keeper against a backup inflates every keeper on the board.
+
+`replacement_levels`, `DRAFT_STARTING_SLOTS` in `src/fpl/projection/vorp.py`.
+
+### VORP (Value Over Replacement Player)
+
+Projected points minus replacement level for that position. The right way to compare a forward
+with a midfielder, because scarcity differs by position.
+
+VORP is **deliberately stable** during a draft, which surprises everyone once: taking a star
+removes one player from the pool *and* one pick from those still to come, so the last man standing
+does not change. Only a *reach* — a pick spent below the line — moves it.
+
+`value_over_replacement` in `src/fpl/projection/vorp.py`.
+
+### Δnext, and the cost of waiting
+
+The other half of the draft question, and the one you have on the clock. **Δnext** is a player's
+points over the *next available* player in his position: the cost of not taking him. **Cost of
+waiting** is the same idea per position — the best available now against the best still there at
+your next pick. Unlike VORP, both move on every pick.
+
+`next_best_drop`, `wait_costs` in `src/web/opportunity.py`.
+
+### Tier
+
+A group of players separated from the next group by a sharp drop in VORP. A tier break means the
+fall-off below is real: pick now, or accept a worse player.
+
+`tier_breaks` in `src/fpl/projection/vorp.py`.
+
+### Run, method, and calibration
+
+A **run** is one saved projection — an immutable file, never edited after it is written, so two
+runs can always be diffed. A **method** is the named parameter set behind it; controls differ from
+the default in exactly one parameter so a comparison settles something. **Calibration** scores a
+run against what actually happened, per component, against a stated naive baseline.
+
+`src/fpl/projection/artifacts.py`, `src/fpl/projection/methods.py`, `src/web/calibration.py`.
+
+### Related Docs
+
+- How a projection is produced, component by component — `src/fpl/projection/README.md`
+- The app that reads runs, and its screens — `src/web/README.md`
+- Where FPL points actually come from, measured — `docs/prediction_roadmap.md`

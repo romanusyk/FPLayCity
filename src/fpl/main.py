@@ -25,6 +25,7 @@ from asyncio import new_event_loop
 
 from src.fpl.compute.prediction import PredictionPipeline
 from src.fpl.models.immutable import Metric, PlayerType, Query
+from src.fpl.loader.utils import resolve_next_gameweek
 from src.fpl.models.season import Season
 from src.fpl.models.stats import StatsQuery
 from src.fpl.models.prediction import GameweekPredictions
@@ -117,9 +118,7 @@ def top_teams_new(
 
 async def main():
     load_dotenv()
-    next_gameweek = int(os.getenv("NEXT_GAMEWEEK"))
-    if not next_gameweek:
-        raise ValueError("NEXT_GAMEWEEK environment variable is not set")
+    next_gameweek = resolve_next_gameweek()
     min_history_gws = 5
     horizon = 8
 

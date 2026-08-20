@@ -31,7 +31,7 @@ Include a brief outline at the top when helpful.
 Example:
 
 ```markdown
-See "Fotmob adapter design" — high‑level data flow and parsing rules — at `src/fpl/models/fotmob_adapter.md`.
+See "Fotmob rotation" — high‑level data flow and parsing rules — at `src/fotmob/rotation/README.md`.
 ```
 
 ### Placement and duplication
@@ -49,8 +49,8 @@ See "Fotmob adapter design" — high‑level data flow and parsing rules — at 
 Examples:
 
 ```markdown
-Class: `FotmobAdapter` in `src/fpl/models/fotmob_adapter.py`
-Method: `FotmobAdapter.fetch_fixture_data` in `src/fpl/models/fotmob_adapter.py`
+Class: `FotmobAdapter` in `src/fotmob/rotation/fotmob_adapter.py`
+Method: `FotmobAdapter.fetch_fixture_data` in `src/fotmob/rotation/fotmob_adapter.py`
 ```
 
 If code changes, update the docs in the same change set whenever possible.
@@ -114,5 +114,5 @@ Brief overviews + paths to linked docs.
 - Prefer linking to a single canonical description over copying text.
 
 ### Notes
-- This project prioritizes clarity and completeness of knowledge. If a fact is uncertain or missing, surface it explicitly rather than papering over it.*** End Patch
+- This project prioritizes clarity and completeness of knowledge. If a fact is uncertain or missing, surface it explicitly rather than papering over it.
 

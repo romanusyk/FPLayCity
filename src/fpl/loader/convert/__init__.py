@@ -12,6 +12,9 @@ from .fpl_api import (
     player_fixture_to_history_json,
     player_fixture_to_future_json,
     fpl_presence_json_to_player_presence,
+    prior_season_to_player_season,
+    player_season_to_json,
+    json_to_player_season,
 )
 from .draft_api import (
     draft_presence_json_to_player_presence,
@@ -37,6 +40,9 @@ __all__ = [
     "player_fixture_to_history_json",
     "player_fixture_to_future_json",
     "fpl_presence_json_to_player_presence",
+    "prior_season_to_player_season",
+    "player_season_to_json",
+    "json_to_player_season",
     "draft_presence_json_to_player_presence",
     "news_json_to_model",
     "news_model_to_json",

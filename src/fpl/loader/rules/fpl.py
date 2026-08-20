@@ -7,6 +7,8 @@ including headings and their associated text, then saves it as markdown.
 """
 
 from pathlib import Path
+
+from src.fpl.loader.utils import Season
 import sys
 
 # Allow running as script or module
@@ -33,7 +35,7 @@ def main():
     """Main function to extract rules from HTML and save as Markdown."""
     script_dir = Path(__file__).parent
     html_file = script_dir / "fpl.html"
-    output_file = Path("data/2025-2026/rules/fpl.md")
+    output_file = Path(f"data/{Season.CURRENT}/rules/fpl.md")
     
     config = RulesExtractorConfig(
         html_path=html_file,

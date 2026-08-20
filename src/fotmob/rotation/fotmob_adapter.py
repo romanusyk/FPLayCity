@@ -6,7 +6,12 @@ import unicodedata
 from bisect import bisect_right
 
 from src.fotmob.models.fotmob import MatchDetails
-from src.fotmob.models.fotmob_metadata import TEAM_NAME_TO_ID
+from src.fotmob.models.fotmob_metadata import (
+    FPL_SHORT_NAMES,
+    TEAM_NAME_TO_ID,
+    teams_for_season,
+)
+from src.fpl.loader.utils import Season
 from src.fpl.models.immutable import Query, Player, Gameweek
 from src.fpl.models.rotation import RotationAnalyzer, GwMapper
 from src.fotmob.rotation.rotation_config import (
@@ -34,28 +39,59 @@ def build_gameweek_mapper(gameweeks: list[Gameweek]) -> GwMapper:
     return mapper
 
 
-FPL_TEAM_ID_TO_FOTMOB_NAME = {
-    1: "Arsenal",
-    2: "Aston Villa",
-    3: "Burnley",
-    4: "Bournemouth",
-    5: "Brentford",
-    6: "Brighton",
-    7: "Chelsea",
-    8: "Crystal Palace",
-    9: "Everton",
-    10: "Fulham",
-    11: "Leeds",
-    12: "Liverpool",
-    13: "Manchester City",
-    14: "Manchester United",
-    15: "Newcastle",
-    16: "Nottingham",
-    17: "Sunderland",
-    18: "Spurs",
-    19: "Westham",
-    20: "Wolves",
-}
+MIN_MATCH_SCORE = 5.0
+"""Minimum `_match_score` for a candidate to be considered at all.
+
+Sharing only a first name scores 4 (one common token, +3 for the first token matching), which
+is not a match - it is three academy players called Josh tying with each other. Any real match
+agrees on a surname, which scores at least 6. Raising the floor above 4 turns those spurious
+ties into an honest "no candidate" instead of an ambiguity error.
+"""
+
+MIN_GLOBAL_MATCH_SCORE = 9.0
+"""Minimum `_match_score` for the *global roster* fallback.
+
+The team-scoped pass can trust a surname: two players called King rarely share a dressing
+room. Across all 587 elements they do, and "George King" of Coventry's academy scores 6
+against both Tom King and Josh King. The global pass therefore demands agreement on more than
+the surname alone - a first name too, or a full prefix match - which real cross-club cases
+(a player who moved after the fixture was played) comfortably clear.
+"""
+
+
+def fpl_team_id_to_fotmob_name(season: str | None = None) -> dict[int, str]:
+    """Map this season's FPL team ids onto our FotMob club names.
+
+    Derived, never hardcoded. FPL renumbers teams alphabetically every season - 16 of the 20
+    ids changed meaning between 2025/26 and 2026/27, and id 3 went from Burnley to
+    Bournemouth - so a literal table is wrong the moment a club is promoted or relegated. The
+    only stable join is `short_name`, which is what `FPL_SHORT_NAMES` records.
+
+    Raises:
+    - ValueError: if a club in the live `Teams` collection has no FotMob counterpart, or if
+      our season roster names a club the FPL bootstrap does not. Either way the lineups for
+      that club would silently go missing.
+    """
+    season = season or Season.CURRENT
+    fotmob_by_short_name = {
+        FPL_SHORT_NAMES[name]: name for name in teams_for_season(season).values()
+    }
+    mapping: dict[int, str] = {}
+    unknown: list[str] = []
+    for team in Query.all_teams():
+        fotmob_name = fotmob_by_short_name.pop(team.short_name, None)
+        if fotmob_name is None:
+            unknown.append(team.short_name)
+            continue
+        mapping[team.team_id] = fotmob_name
+    if unknown or fotmob_by_short_name:
+        raise ValueError(
+            f"FotMob roster for {season} does not line up with the loaded FPL teams.\n"
+            f"  FPL clubs with no FotMob entry: {sorted(unknown)}\n"
+            f"  FotMob clubs not in the FPL bootstrap: {sorted(fotmob_by_short_name)}\n"
+            f"Update SEASON_TEAMS/FPL_SHORT_NAMES in src/fotmob/models/fotmob_metadata.py."
+        )
+    return mapping
 
 
 class FotmobAdapter:
@@ -66,14 +102,28 @@ class FotmobAdapter:
         rotation_config: RotationConfig,
         gw_mapper: GwMapper,
         overrides: list[PlayerMappingOverride] | None = None,
+        season: str | None = None,
+        allow_unmatched: bool = False,
     ):
         """
         Index matches and derive FotMob↔FPL mappings for downstream rotation analysis.
+
+        Parameters:
+        - season: season whose club roster the FPL team ids belong to. Defaults to
+          `Season.CURRENT`. Passing the wrong one silently maps clubs to each other's lineups.
+        - allow_unmatched: when True, a FotMob player with no FPL counterpart at all is
+          recorded in `unmatched_players` and logged instead of raising. Set this only for
+          pre-season friendlies, where academy players who are not FPL elements appear in
+          every lineup. An *ambiguous* match still raises either way - that is a data problem,
+          not an absence.
 
         Raises:
             ValueError: When required teams, players, or deadlines are missing so data would be incomplete.
         """
         self._config = rotation_config
+        self._season = season or Season.CURRENT
+        self._allow_unmatched = allow_unmatched
+        self.unmatched_players: list[tuple[int, str]] = []
         self._allowed_leagues = set(rotation_config.included_leagues or [])
         self._matches_by_team = self._convert_team_keys(match_details_by_team_name)
         self._team_mapping = self._build_team_mapping()
@@ -99,31 +149,21 @@ class FotmobAdapter:
             if team_name not in TEAM_NAME_TO_ID:
                 raise ValueError(f"Unknown FotMob team '{team_name}'")
             result[TEAM_NAME_TO_ID[team_name]] = matches
-        for fotmob_team_id in TEAM_NAME_TO_ID.values():
+        for fotmob_team_id in teams_for_season(self._season):
             result.setdefault(fotmob_team_id, [])
         return result
 
     def _build_team_mapping(self) -> dict[int, int]:
         """
-        Ensure every FPL team id has a corresponding FotMob team id.
+        Map this season's FPL team ids to FotMob team ids.
 
         Raises:
             ValueError: When a FotMob id is missing so downstream lookups cannot be trusted.
         """
-        mapping: dict[int, int] = {}
-        missing: list[tuple[int, str]] = []
-        for fpl_team_id, fotmob_name in FPL_TEAM_ID_TO_FOTMOB_NAME.items():
-            fotmob_team_id = TEAM_NAME_TO_ID.get(fotmob_name)
-            if fotmob_team_id is None:
-                missing.append((fpl_team_id, fotmob_name))
-                continue
-            mapping[fpl_team_id] = fotmob_team_id
-        if missing:
-            raise ValueError(
-                f"Missing FotMob ids for FPL teams: {missing}. "
-                "Please extend TEAMS in src/fotmob/models/fotmob_metadata.py."
-            )
-        return mapping
+        return {
+            fpl_team_id: TEAM_NAME_TO_ID[fotmob_name]
+            for fpl_team_id, fotmob_name in fpl_team_id_to_fotmob_name(self._season).items()
+        }
 
     def _build_player_mappings(self):
         """Populate FotMob↔FPL dictionaries, respecting overrides and ambiguity checks."""
@@ -152,12 +192,45 @@ class FotmobAdapter:
                 self._fotmob_to_fpl[fotmob_player_id] = fpl_player_id
                 self._fpl_to_fotmob[fpl_player_id] = fotmob_player_id
 
+        if self.unmatched_players:
+            logging.info(
+                "%d FotMob player(s) had no FPL counterpart and were skipped (allow_unmatched=True). "
+                "First 10: %s",
+                len(self.unmatched_players),
+                ", ".join(name for _, name in self.unmatched_players[:10]),
+            )
+
     def _index_overrides(self) -> dict[int, PlayerMappingOverride]:
-        """Return overrides keyed by FotMob player id for deterministic lookups."""
-        return {
-            override.fotmob_player_id: override
-            for override in self._overrides
-        }
+        """Return overrides keyed by FotMob player id, dropping the ones that have aged out.
+
+        An override names a player by `fpl_player_code`, which is stable across seasons. When
+        that code is absent from the loaded squad the player has left the league, so the
+        override no longer applies. That is a correct skip, and it is logged and counted -
+        silently dropping it would hide a typo in the code just as effectively as a transfer.
+
+        Raises:
+        - ValueError: on two overrides for the same FotMob player, which cannot both be right.
+        """
+        indexed: dict[int, PlayerMappingOverride] = {}
+        retired: list[str] = []
+        for override in self._overrides:
+            existing = indexed.get(override.fotmob_player_id)
+            if existing is not None and existing != override:
+                raise ValueError(
+                    f"Two different overrides for FotMob player {override.fotmob_player_id}: "
+                    f"{existing!r} and {override!r}. Remove one in "
+                    f"src/fotmob/rotation/rotation_config.py."
+                )
+            if not override.ignore and Query.player_by_code(override.fpl_player_code) is None:
+                retired.append(f"{override.note or override.fotmob_player_id}")
+                continue
+            indexed[override.fotmob_player_id] = override
+        if retired:
+            logging.info(
+                "%d player mapping override(s) skipped - not in the %s squad: %s",
+                len(retired), self._season, ", ".join(retired),
+            )
+        return indexed
 
     def _resolve_fpl_player_id_for_fotmob(
         self,
@@ -173,12 +246,13 @@ class FotmobAdapter:
         if override:
             if override.ignore:
                 return None
-            if override.fpl_player_id is None:
+            if override.fpl_player_code is None:
                 raise ValueError(
                     f"Override for FotMob player '{fotmob_name}' ({fotmob_player_id}) "
-                    "must specify fpl_player_id when ignore=False."
+                    "must specify fpl_player_code when ignore=False."
                 )
-            fpl_player_id = override.fpl_player_id
+            # _index_overrides has already dropped codes that are not in this season's squad.
+            fpl_player_id = Query.player_by_code(override.fpl_player_code).player_id
         else:
             fpl_player_id = self._match_fotmob_player(
                 fpl_team_id,
@@ -188,6 +262,9 @@ class FotmobAdapter:
                 name_index,
                 self._global_name_index,
             )
+
+        if fpl_player_id is None:
+            return None
 
         existing = self._fotmob_to_fpl.get(fotmob_player_id)
         if existing and existing != fpl_player_id:
@@ -220,8 +297,11 @@ class FotmobAdapter:
         fotmob_name: str,
         name_index: dict[int, list[list[str]]],
         fallback_index: dict[int, list[list[str]]],
-    ) -> int:
-        """Match one FotMob name to an FPL player using team-first then global search."""
+    ) -> int | None:
+        """Match one FotMob name to an FPL player using team-first then global search.
+
+        Returns None only when `allow_unmatched` is set and no candidate exists at all.
+        """
         tokens = self._tokenize(fotmob_name)
         if not tokens:
             raise ValueError(f"Cannot derive tokens for FotMob player '{fotmob_name}' ({fotmob_player_id})")
@@ -244,6 +324,7 @@ class FotmobAdapter:
             fotmob_name,
             fotmob_player_id,
             context="global roster",
+            min_score=MIN_GLOBAL_MATCH_SCORE,
         )
         if player_id is not None:
             logging.info(
@@ -257,9 +338,15 @@ class FotmobAdapter:
             )
             return player_id
 
+        if self._allow_unmatched:
+            self.unmatched_players.append((fotmob_player_id, f"{fotmob_name} ({fotmob_team_name})"))
+            return None
+
         raise ValueError(
             f"No candidate FPL player for FotMob player '{fotmob_name}' ({fotmob_player_id}) "
-            f"in team {fotmob_team_name}/{fpl_team_name} or global roster."
+            f"in team {fotmob_team_name}/{fpl_team_name} or global roster. "
+            f"Pass allow_unmatched=True if this is pre-season friendly data, where academy "
+            f"players who are not FPL elements are expected."
         )
 
     def _resolve_best_match(
@@ -269,12 +356,13 @@ class FotmobAdapter:
         fotmob_name: str,
         fotmob_player_id: int,
         context: str,
+        min_score: float = MIN_MATCH_SCORE,
     ) -> int | None:
-        """Return the unique best-scoring FPL candidate or None when no overlap exists."""
+        """Return the unique best-scoring FPL candidate, or None when nothing scores well enough."""
         scored_matches: list[tuple[float, int]] = []
         for player_id, variants in index.items():
             score = max((self._match_score(fotmob_tokens, variant) for variant in variants), default=0.0)
-            if score > 0:
+            if score >= min_score:
                 scored_matches.append((score, player_id))
 
         if not scored_matches:

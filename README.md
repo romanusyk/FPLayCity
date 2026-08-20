@@ -1,6 +1,34 @@
 # FPLayCity
 Fantasy Premier League stats & predictions
 
+## Start here
+
+```bash
+./refresh.sh              # fetch FPL + FotMob, then project both games
+./run.sh -m src.web.serve   # review app on http://127.0.0.1:8000
+```
+
+The review app is the front door. It serves a draft board ranked by value over replacement, an
+FPL board ranked by points and price, a per-player breakdown of where every projected point
+comes from, and a comparison view for two runs of the same game. Every column explains itself on
+hover, and `#/glossary` collects those explanations on one page.
+
+These docs cover the rest:
+
+- **`src/fpl/projection/README.md`** — how a projection is produced and what each component model
+  does. Read this before changing a model.
+- **`src/web/README.md`** — the app, its routes and its screens.
+- **`docs/prediction_roadmap.md`** — where FPL points actually come from, measured, and what is
+  still worth building.
+- **`docs/glossary.md`** — the vocabulary: the game's terms, and ours (`p(start)`, VORP,
+  replacement level, Δnext, tiers, runs and methods).
+- **`CLAUDE.md`** — repo conventions and the traps that have already cost time.
+
+The long architecture discussion below predates all of that and describes the older in-season
+pipeline (`src/fpl/forecast/`, `src/fpl/compute/`), which still exists and still works. Phase 3
+of the north star — a FastAPI layer — has now landed as `src/web/`, though for the review app
+rather than as a general API over the compute pipeline.
+
 ## System Overview
 
 ### Data Types
@@ -697,54 +725,114 @@ class Player(BaseModel):
 - MCP server auto-generated from OpenAPI spec
 - `__repr__` uses view layer for clean debugger output
 
-## Usage
+## Where to improve predictions
 
-**Migration (one-time, if upgrading from old directory-based storage):**
-```bash
-uv run -m src.fpl.loader.migrate_single_snapshot --season 2024-2025 --season 2025-2026
-```
+See "Improving predictions" — a measured breakdown of where FPL points come from and a
+prioritised roadmap — at `docs/prediction_roadmap.md`.
+
+The loop for actually doing it: change a model in `src/fpl/projection/`, add a named method to
+`METHODS` that differs from `v1-baseline` in exactly one way, generate a run, and open the
+Compare screen. See "Adding a method" in `src/fpl/projection/README.md`.
+
+## Seasons
+
+The active season is declared once, in `Season.CURRENT` (`src/fpl/loader/utils.py`). Rolling
+over to a new season is a one-line change there plus a `SEASON_TEAMS` entry in
+`src/fotmob/models/fotmob_metadata.py` for promotion/relegation.
+
+Two things make cross-season work subtle, and both are handled centrally:
+
+- **Identifiers move.** FPL reassigns element `id` and team `id` every season — 16 of 20 team
+  ids changed meaning between 2025/26 and 2026/27. Element `code` and team `short_name` are the
+  only stable keys, and all cross-season joins use them.
+- **A new season starts empty.** Until GW1, `bootstrap-static` still carries last season's
+  totals against each player's *new* club. `./run.sh -m src.fpl.fetch --baseline` captures them
+  into `PlayerSeasons` so models have something to work with on day one. Bootstrap is
+  unreliable for players who changed club, so `element-summary/history_past` is treated as
+  authoritative — see `src/fpl/loader/baseline.py`.
+
+## Usage
 
 Load data from FPL API:
 ```bash
-uv run -m src.fpl.loader.load
+./run.sh -m src.fpl.fetch                  # refresh the current season's snapshots
+./run.sh -m src.fpl.fetch --baseline       # also capture last season's per-player totals
+./run.sh -m src.fpl.fetch --baseline-only  # capture only the baseline
+```
+
+Capture FotMob lineups, including pre-season friendlies:
+```bash
+./run.sh -m src.fotmob.load                      # every club in the current season
+./run.sh -m src.fotmob.load --team 'Coventry'    # a single club
+./run.sh -m src.fotmob.load --season 2025-2026   # backfill an earlier season
 ```
 
 Fetch news articles:
 ```bash
-uv run -m src.fpl.loader.news.pl fpl_scout --last-gw=15
-uv run -m src.fpl.loader.news.pl fpl_scout --last-gw=15 --first-gw=14
-uv run -m src.fpl.loader.news.pl fpl_scout --last-gw=15 --list-known-content
+./run.sh -m src.fpl.loader.news.pl fpl_scout --last-gw=15
+./run.sh -m src.fpl.loader.news.pl fpl_scout --last-gw=15 --first-gw=14
+./run.sh -m src.fpl.loader.news.pl fpl_scout --last-gw=15 --list-known-content
 ```
 
-Run predictions & evaluation:
+Generate a projection run, then review it:
 ```bash
-uv run -m src.fpl.main
+./run.sh -m src.fpl.project                        # both games, default method
+./run.sh -m src.fpl.project --game draft           # one game only
+./run.sh -m src.fpl.project --method v0-raw-dc     # a control, for comparison
+./run.sh -m src.fpl.project --list-methods
+./run.sh -m src.web.serve                          # http://127.0.0.1:8000
+```
+
+Or chain fetch, FotMob capture and projection in one step:
+```bash
+./refresh.sh                    # default method
+./refresh.sh v0-no-preseason    # a named method
+SKIP_FETCH=1 ./refresh.sh       # reproject from what is already on disk
+```
+
+Run in-season predictions & evaluation (needs played gameweeks):
+```bash
+./run.sh -m src.fpl.main
 ```
 
 ## Testing
 
 Run unit tests:
 ```bash
-uv run pytest
+./run.sh -m pytest
 ```
 
 Run with verbose output:
 ```bash
-uv run pytest -v
+./run.sh -m pytest -v
 ```
 
 Run specific test file:
 ```bash
-uv run pytest tests/test_immutable.py
+./run.sh -m pytest tests/test_immutable.py
 ```
 
 Run specific test class or method:
 ```bash
-uv run pytest tests/test_immutable.py::TestQueryFacade::test_query_player_by_name
+./run.sh -m pytest tests/test_immutable.py::TestQueryFacade::test_query_player_by_name
+```
+
+Offline tests (no network, no cached data required):
+```bash
+./run.sh -m pytest tests/test_prior_season.py tests/test_fotmob_friendlies.py \
+              tests/test_projection_models.py tests/test_artifacts.py
 ```
 
 **Test Coverage:**
-- ✅ Collections: Teams, Fixtures, Players, PlayerFixtures, Gameweeks, News
+- ✅ Scoring: all 23,165 stored 2025/26 player-matches re-scored and reconciled exactly
+- ✅ Collections: Teams, Fixtures, Players, PlayerSeasons, PlayerFixtures, Gameweeks, News
+- ✅ Prior-season reconciliation: bootstrap vs `history_past`, club-change repairs, loud failures
+- ✅ Friendlies: match-kind classification, weighted squad roles, per-season club rosters
+- ✅ Projection models: defensive-contribution shrinkage, replacement level, tiers, methods
+- ✅ Artifacts: run immutability, retention, feedback, draft state — all in a temp directory
+- ✅ HTTP: every app route against the real snapshots, read-only
 - ✅ Query facade: All lookup methods (including news queries)
 - ✅ Data integrity: Relationships and computed properties
 - ⚠️ Unsupported indices: Tests verify they raise `KeyError`
+
+Details, including which tests need cached data and which do not — `tests/README.md`.

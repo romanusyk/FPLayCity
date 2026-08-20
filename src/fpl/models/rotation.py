@@ -45,7 +45,12 @@ class RotationAnalyzer:
         self._build_indexes()
 
     def _build_indexes(self):
-        """Populate appearance timelines and rival substitution logs for every player."""
+        """Populate appearance timelines and rival substitution logs for every player.
+
+        `included_leagues` is an optional hard allow-list; empty means every league. Friendlies
+        are kept by default and down-weighted via `RotationConfig.match_kind_weights` rather
+        than discarded, because in pre-season they are the only evidence available.
+        """
         included_leagues = set(self._config.included_leagues)
         for team_matches in self._matches_by_team.values():
             for match in team_matches:
@@ -56,13 +61,18 @@ class RotationAnalyzer:
                 self._register_substitutions(match, gw_eff)
 
     def _register_appearances(self, match: MatchDetails, gw_eff: int):
-        """Record starters, bench players, and unavailable players for a single match."""
+        """Record starters, bench players, and unavailable players for a single match.
+
+        Starting and being benched are weighted by match kind. Being unavailable is not: an
+        injury keeps a player out of a friendly exactly as it keeps them out of a league game.
+        """
+        weight = self._config.weight_for(match.kind)
         for player in match.starters:
-            self._add_appearance(player, PlayerAppearanceStatus.STARTED, match, gw_eff)
+            self._add_appearance(player, PlayerAppearanceStatus.STARTED, match, gw_eff, weight)
         for player in match.benched:
-            self._add_appearance(player, PlayerAppearanceStatus.BENCHED, match, gw_eff)
+            self._add_appearance(player, PlayerAppearanceStatus.BENCHED, match, gw_eff, weight)
         for player in match.unavailable:
-            self._add_appearance(player, PlayerAppearanceStatus.UNAVAILABLE, match, gw_eff)
+            self._add_appearance(player, PlayerAppearanceStatus.UNAVAILABLE, match, gw_eff, 1.0)
 
     def _add_appearance(
         self,
@@ -70,12 +80,14 @@ class RotationAnalyzer:
         status: PlayerAppearanceStatus,
         match: MatchDetails,
         gw_eff: int,
+        weight: float,
     ):
         """Append one appearance entry to the chronological history for a FotMob player."""
         appearance = PlayerAppearance(
             fotmob_player_id=player.id,
             status=status,
             match=match,
+            weight=weight,
         )
         self._remember_player_name(player)
         self._player_appearances[player.id].append((gw_eff, appearance))

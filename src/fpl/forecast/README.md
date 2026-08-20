@@ -1,6 +1,10 @@
 ## Overview
 Forecast provides simple, composable models to predict fixture- and player‑level outcomes using recent form, season aggregates, and fixture difficulty. Outputs are `Aggregate` values that upstream code can combine, compare, and evaluate with loss functions.
 
+**Scope note.** This is the *in-season* pipeline: every model here reads `Season` aggregates and needs played gameweeks to work from. The pre-season and multi-gameweek horizon path is a separate package, `src/fpl/projection/`, which projects from last season's totals plus pre-season friendlies and writes immutable run artifacts. They share nothing but the immutable models, deliberately — see `src/fpl/projection/README.md`.
+
+Two known problems with the models below, measured in `docs/prediction_roadmap.md`: `PlayerPointsSimpleModel` covers 45.5% of the scoring surface (it has no appearance, bonus, saves or negatives term), and `Player.dc_points` treats defensive contribution as linear when it is a step function. `src/fpl/projection/scoring.py` has the corrected, verified scoring rules; this package has not yet been migrated onto them.
+
 ## Key Concepts
 - **Aggregate outputs**: Predictions return `Aggregate` (point estimate `p` plus implicit sample size `count`) from `src/fpl/aggregate.py`.
 - **Season context**: All models depend on `Season` in `src/fpl/models/season.py` for team/player stats, including form windows and FDR splits.
@@ -77,8 +81,9 @@ Inputs must be consistent with `Fixture`, `PlayerFixture`, and `Season` from `sr
 - `src/fpl/models/season.py` — season aggregates for teams/players
 
 ## Related Docs
+- Horizon projection, run artifacts and VORP — see `src/fpl/projection/README.md` (the pre-season sibling of this package, with the verified scoring function).
+- Where the points actually are, and what to build next — see `docs/prediction_roadmap.md`.
 - Compute pipeline and aggregate composition — see `src/fpl/compute/README.md` (how aggregates are combined and normalized).
-- Fotmob loader overview — see `src/fpl/fotmob/README.md` (input data sources and normalization).
-- Rotation and team/player model basics — see `src/fpl/models/README_rotation.md` (concepts that inform season stats and usage).*** End Patch
-{"id":"todo-forecast-readme","status":"completed","content":"Create src/fpl/forecast/README.md with module overview and API"}
+- Fotmob loader overview — see `src/fotmob/README.md` (input data sources and normalization).
+- Rotation and squad-role basics — see `src/fotmob/rotation/README.md` (how appearance evidence is weighted and turned into squad roles).
 

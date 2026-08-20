@@ -17,7 +17,7 @@ from src.fpl.models.immutable import Gameweek, NewsModel
 
 
 API_BASE = "https://api.premierleague.com/content/premierleague/en"
-SEASON = Season.s2526
+SEASON = Season.CURRENT
 NEWS_DIR = f"data/{SEASON}/news"
 DEFAULT_SLEEP_SEC = 0.5
 

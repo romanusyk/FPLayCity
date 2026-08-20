@@ -3,10 +3,12 @@ Extract FPL Draft rules from a saved HTML file and convert them to Markdown.
 
 This module is intended to be run as a module with `uv run -m src.fpl.loader.rules.draft`.
 It parses the FPL Draft Rules HTML page, extracts all relevant rules content (headings
-and associated text), and writes a normalized Markdown file under `data/2025-2026/rules/`.
+and associated text), and writes a normalized Markdown file under `data/<current season>/rules/`.
 """
 
 from pathlib import Path
+
+from src.fpl.loader.utils import Season
 
 from .base import RulesExtractorConfig, run_extractor
 
@@ -30,7 +32,7 @@ def main():
     """Main function to extract rules from HTML and save as Markdown."""
     script_dir = Path(__file__).parent
     html_file = script_dir / "draft.html"
-    output_file = Path("data/2025-2026/rules/draft.md")
+    output_file = Path(f"data/{Season.CURRENT}/rules/draft.md")
     
     config = RulesExtractorConfig(
         html_path=html_file,

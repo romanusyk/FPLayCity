@@ -93,6 +93,14 @@ In the model, tactical analysis acts as a **modifier** on the statistical baseli
 - If a starter gets injured, a backup may suddenly have **high minutes and xPts** in the next few fixtures.
 - Congested schedules (European matches, cups) often increase rotation for **high‑minutes, high‑value** players.
 
+**Where this stands (2026-08-18).** Availability and role are modelled — `p_start` factors into
+role share × availability in `src/fpl/projection/minutes.py`, and pre-season involvement is the
+main pre-GW1 signal for role. The **depth chart is not**: nothing in the model knows a club signed
+a competitor, so "first-choice player with a strong backup in form" is still a human judgement.
+Where the model deliberately overrides a weak pre-season signal for a nailed starter it marks the
+player `preseason_role_drop` on the board instead of hiding the call. Squad competition is item 3
+under "Still open" in `docs/prediction_roadmap.md`.
+
 In practical terms, rotation and squad context feed back into:
 
 - **Availability risk** (P(start), expected minutes).

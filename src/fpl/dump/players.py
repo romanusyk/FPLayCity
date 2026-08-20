@@ -7,6 +7,9 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Optional
 
+from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
+from src.fpl.loader.utils import Season
+
 
 def find_latest_file(directory: str, pattern: str = "response_body_*.json") -> str:
     """Find the latest timestamped file in a directory."""
@@ -21,19 +24,20 @@ def find_latest_file(directory: str, pattern: str = "response_body_*.json") -> s
     return latest_file
 
 
-def find_latest_bootstrap_file(season: str = "2025-2026") -> str:
-    """Find the latest bootstrap file for a season."""
-    # Get the script directory and find data directory
-    script_dir = Path(__file__).parent
-    data_dir = script_dir.parent.parent.parent / "data" / season
-    
-    bootstrap_dir = data_dir / "bootstrap"
-    
-    if not bootstrap_dir.exists():
-        raise FileNotFoundError(f"Bootstrap directory not found: {bootstrap_dir}")
-    
-    bootstrap_path = find_latest_file(str(bootstrap_dir))
-    return bootstrap_path
+def find_latest_bootstrap_file(season: str | None = None) -> str:
+    """Find the latest bootstrap snapshot for a season.
+
+    Resolves through `JsonSnapshotStore` so it tracks the single-snapshot layout
+    (`data/<season>/bootstrap_<ts>.json`) rather than the retired directory-per-resource one.
+    """
+    season = season or Season.CURRENT
+    store = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{season}/bootstrap"))
+    latest = store.find_latest()
+    if latest is None:
+        raise FileNotFoundError(
+            f"No bootstrap snapshot under data/{season}/. Run `uv run -m src.fpl.fetch` first."
+        )
+    return latest[1]
 
 
 def load_position_mapping(bootstrap_data: dict) -> Dict[int, str]:
@@ -128,8 +132,8 @@ def dump_players_csv(bootstrap_path: str) -> None:
     players_data = dump_players(bootstrap_path)
     
     # Ensure dumps directory exists
-    data_dir = Path(bootstrap_path).parent.parent  # Go up from bootstrap/ to data/
-    dumps_dir = data_dir / 'dumps'
+    season_dir = Path(bootstrap_path).parent  # snapshots live directly under data/<season>/
+    dumps_dir = season_dir / 'dumps'
     dumps_dir.mkdir(exist_ok=True)
     
     # Write CSV
@@ -166,13 +170,13 @@ def dump_players_csv(bootstrap_path: str) -> None:
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(description='Dump Fantasy Premier League Players Data')
-    parser.add_argument('bootstrap_path', nargs='?', help='Path to bootstrap response body JSON file (optional, auto-detects latest for 2025-2026)')
+    parser.add_argument('bootstrap_path', nargs='?', help='Path to bootstrap response body JSON file (optional, auto-detects the latest snapshot for the current season)')
     
     args = parser.parse_args()
     
     # Auto-detect file if not provided
     if args.bootstrap_path is None:
-        print("Auto-detecting latest bootstrap file for 2025-2026 season...")
+        print(f"Auto-detecting latest bootstrap file for {Season.CURRENT} season...")
         bootstrap_path = find_latest_bootstrap_file()
         print(f"Using bootstrap: {bootstrap_path}")
     else:
