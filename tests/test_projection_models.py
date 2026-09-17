@@ -400,3 +400,168 @@ class TestMethods:
 
     def test_horizon_counts_both_endpoints(self):
         assert ProjectionParams(gameweek_from=1, gameweek_to=10).horizon == 10
+
+
+class TestRoleEvidenceWindow:
+    """Which matches count as role evidence, once some of the season has been played.
+
+    Before GW1 the two settings cannot differ: the window closes at the GW1 deadline either way.
+    From GW2 on, the default pulls played gameweeks into the blend at competitive weight, which is
+    a real change in what the fitted constants are being applied to - so it is a named parameter
+    with a control, not an implicit consequence of `gameweek_from`.
+    """
+
+    def test_the_default_window_is_the_projection_start(self):
+        from src.fpl.projection.methods import METHODS
+
+        params = METHODS['v3-role-trust'].params.replace(gameweek_from=2, gameweek_to=11)
+        assert params.role_evidence_before_gameweek is None
+        assert (params.role_evidence_before_gameweek or params.gameweek_from) == 2
+
+    def test_the_control_pins_the_window_to_pre_season(self):
+        from src.fpl.projection.methods import METHODS
+
+        params = METHODS['v3-role-preseason-only'].params.replace(gameweek_from=2, gameweek_to=11)
+        assert (params.role_evidence_before_gameweek or params.gameweek_from) == 1
+
+    def test_the_pair_differ_in_exactly_one_parameter(self):
+        from dataclasses import asdict
+
+        from src.fpl.projection.methods import METHODS
+
+        a = asdict(METHODS['v3-role-trust'].params)
+        b = asdict(METHODS['v3-role-preseason-only'].params)
+        assert [key for key in a if a[key] != b[key]] == ['role_evidence_before_gameweek']
+
+
+class TestCurrentSeasonRamp:
+    """Once matches have been played, they take over from last season's start share.
+
+    The pre-season curve answers "what does *July* tell you about this player", and for a nailed
+    starter the fitted answer is "very little - his absence is rest". That answer expires the
+    moment real team sheets exist, and without a ramp a 0.15 weight would still be handing last
+    season 85% of the say in October. Nothing here is fitted: one gameweek cannot fit a ramp, so
+    the shape is a stated judgement with `v3-role-trust` as the do-nothing control.
+    """
+
+    def test_the_ramp_is_inert_before_a_ball_is_kicked(self):
+        from src.fpl.projection.minutes import current_season_ramp
+
+        assert current_season_ramp(0, 5.0) == 0.0
+        assert current_season_ramp(4, None) == 0.0, 'None is the control, at any point in a season'
+
+    def test_it_walks_to_one_over_the_stated_number_of_matches(self):
+        from src.fpl.projection.minutes import current_season_ramp
+
+        assert current_season_ramp(1, 5.0) == pytest.approx(0.2)
+        assert current_season_ramp(3, 5.0) == pytest.approx(0.6)
+        assert current_season_ramp(5, 5.0) == 1.0
+        assert current_season_ramp(12, 5.0) == 1.0, 'and stays there'
+
+    def test_a_nonsense_ramp_length_raises(self):
+        from src.fpl.projection.minutes import current_season_ramp
+
+        with pytest.raises(ValueError, match='must be positive'):
+            current_season_ramp(3, 0)
+
+    def a_nailed_starter_benched_recently(self, **kwargs):
+        return MinutesModel(**kwargs).estimate(
+            a_player(), a_prior_season(starts=35), PlayerHistory(1, 1),
+            a_preseason_role(starts=0.0),
+        )
+
+    def test_before_the_season_the_ramp_changes_nothing(self):
+        """v4 must be identical to v3 in August, or every pre-season comparison is invalidated."""
+        with_ramp = self.a_nailed_starter_benched_recently(
+            played_gameweeks=0, current_season_full_matches=5.0)
+        without = self.a_nailed_starter_benched_recently()
+        assert with_ramp.p_start == pytest.approx(without.p_start)
+
+    def test_by_five_matches_the_recent_window_decides(self):
+        """A nailed starter who has not started a match in five weeks is not a nailed starter."""
+        after_one = self.a_nailed_starter_benched_recently(
+            played_gameweeks=1, current_season_full_matches=5.0)
+        after_five = self.a_nailed_starter_benched_recently(
+            played_gameweeks=5, current_season_full_matches=5.0)
+        before = self.a_nailed_starter_benched_recently()
+        assert before.p_start > after_one.p_start > after_five.p_start
+        assert after_five.p_start == pytest.approx(0.0, abs=0.01), 'he has started nothing'
+        # 0.66 -> 0.53 on one benching. The curve is interpolated, not stepped: a 0.921 prior sits
+        # between the 0.5 and 1.0 knots and starts at a 0.284 weight, not the 0.15 endpoint, so a
+        # fifth of the remaining distance is a real but survivable dent.
+        assert after_one.p_start == pytest.approx(0.53, abs=0.02)
+        assert after_one.p_start > 0.5, 'one benching is not evidence of a role change'
+
+    def test_a_player_the_recent_window_likes_gains_from_it(self):
+        """Symmetry: the ramp is not a penalty, it is a transfer of authority."""
+        model = MinutesModel(played_gameweeks=5, current_season_full_matches=5.0)
+        estimate = model.estimate(
+            a_player(), a_prior_season(starts=8), PlayerHistory(1, 1),
+            a_preseason_role(starts=1.0),
+        )
+        assert estimate.p_start > 0.9
+
+
+class TestClubRatingsFromThisSeason:
+    """Club ratings used to be a year old all season. Now this season is blended in.
+
+    The blind spot this closes: Manchester United lost 0-2 at Hull in GW1 and every clean-sheet
+    probability for their defenders was unchanged, because `TeamStrength` read only last season's
+    finished fixtures. Reads the real snapshots, so it skips where they are absent.
+    """
+
+    @pytest.fixture(scope='class')
+    def loaded(self):
+        from src.fpl.loader.load import load_from_snapshots
+        from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
+        from src.fpl.loader.utils import Season
+
+        if JsonSnapshotStore(SnapshotSpec(base_path=f'data/{Season.CURRENT}/bootstrap')).find_latest() is None:
+            pytest.skip('No bootstrap snapshot')
+        load_from_snapshots(Season.CURRENT)
+        return Season.CURRENT
+
+    def test_ignoring_the_current_season_is_the_old_behaviour(self, loaded):
+        from src.fpl.projection.strength import TeamStrength
+
+        off = TeamStrength(loaded, current_prior_matches=None)
+        assert off.current_totals == {}
+        for rating in off.ratings.values():
+            assert rating.matches <= 38, 'no current-season matches folded in'
+
+    def test_blending_moves_a_club_toward_what_it_has_just_done(self, loaded):
+        from src.fpl.projection.strength import TeamStrength
+
+        off = TeamStrength(loaded, current_prior_matches=None)
+        on = TeamStrength(loaded, current_prior_matches=5.0)
+        if not on.current_totals or not any(row[2] for row in on.current_totals.values()):
+            pytest.skip('No finished fixtures in the current season yet')
+        moved = [name for name in on.ratings
+                 if abs(on.ratings[name].defence - off.ratings[name].defence) > 1e-9]
+        assert moved, 'at least one club has played and must have moved'
+        # Direction, for clubs with a rate of their own: conceding above their prior rate must
+        # rate them worse. Promoted clubs are excluded because their prior is the bottom-three
+        # placeholder rather than a measured rate, and one hard match shrunk on its own sample is a
+        # milder claim than a whole season of being the third-worst defence in the division.
+        for name in moved:
+            goals_for, goals_against, matches = on.current_totals[name]
+            if not matches or off.ratings[name].promoted:
+                continue
+            prior = off.ratings[name]
+            # Compare like with like: the club's own *raw* prior rate, not `prior.attack *
+            # league_average`, which reconstructs a rate from an already-shrunk multiplier and so
+            # sits above the real one. NFO scored 1.000/match against a raw prior of 0.941 and a
+            # shrunk-implied 1.025 - an improvement that the old threshold read as a decline, and
+            # the blend correctly raised their attack while the test demanded it fall.
+            prior_attack_rate = prior.goals_for / prior.matches
+            prior_defence_rate = prior.goals_against / prior.matches
+            if goals_against / matches > prior_defence_rate:
+                assert on.ratings[name].defence > prior.defence, name
+            if goals_for / matches < prior_attack_rate:
+                assert on.ratings[name].attack < prior.attack, name
+
+    def test_a_nonsense_blend_length_raises(self, loaded):
+        from src.fpl.projection.strength import TeamStrength
+
+        with pytest.raises(ValueError, match='must be positive'):
+            TeamStrength(loaded, current_prior_matches=0)

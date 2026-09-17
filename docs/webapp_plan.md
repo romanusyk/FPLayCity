@@ -10,7 +10,7 @@ and how to run it, read `src/web/README.md` and `src/fpl/projection/README.md`.
 All six phases in section 7 shipped, including the calibration harness — though with nothing to
 score until a gameweek resolves, it reports that rather than drawing an empty chart.
 
-Three things exist that this plan did not ask for, each added because using the app exposed a gap:
+Four things exist that this plan did not ask for, each added because using the app exposed a gap:
 
 - **A glossary, and a hint on every column.** Section 4 assumed the columns were self-evident.
   They are not — the board carries sixteen of them, several of which are terms of art. Every
@@ -22,6 +22,19 @@ Three things exist that this plan did not ask for, each added because using the 
   answer that one and move on every pick. `src/web/opportunity.py`.
 - **A `role drop?` flag.** Where the minutes model deliberately overrides the pre-season signal,
   the board says so, rather than presenting a judgement call as a fact.
+- **A waivers screen with its own metric.** Section 4A assumed the draft board would double as a
+  waiver board "over the unowned pool" — that is, VORP recomputed with owned players removed. That
+  is the wrong number. A waiver is a *swap inside a fixed fifteen*, restricted to the same
+  position, so what matters is the change to your best legal eleven, not the player's standing
+  against a replacement nobody wants. `#/waivers` prices every free agent that way, at three
+  horizons at once, and ranks by the one you say you are deciding on.
+  `src/web/waivers.py`, ownership from `src/fpl/loader/draft_league.py`.
+
+  Two things fell out of building it. Ownership cannot come from `PlayerPresences` as section 4A
+  assumed: those are last deadline's picks, so every waiver processed since is invisible, and the
+  entry ids behind them are re-issued every season. And the horizons are free — a run already
+  stores per-fixture points, so 1, 3 and 5 gameweeks are three sums of one file, which is the same
+  property that made runs-as-artifacts worth it in the first place.
 
 The four open questions in section 9 were answered: **two projections** (draft and FPL are
 separate runs so their methods can diverge), **live draft mode** (the board recomputes
@@ -189,6 +202,14 @@ waiver board over the unowned pool.
 
 **B. FPL board** (`/fpl`) — sorted by projection, with price, points-per-million, ownership and
 differential flags. Same underlying run, different lens.
+
+*Built, and since extended with the waivers screen's horizons.* "Sorted by projection" turned out
+to mean *which* projection: the run is ten gameweeks, and a decision about a transfer is rarely
+about all ten. The board now shows three horizons at once, ranks on the one you pick, and derives
+`per GW` and `pts/£` from it, so the value columns answer the same question as the ranking. The
+component columns stay run-range and the page says so — a run stores points per fixture but
+components only as totals, so slicing them would be an invention. It reads the same horizon
+helpers as `src/web/waivers.py`, which is what keeps "3 GW" one window rather than two.
 
 Both: sortable/filterable by position, club, price, availability; component columns toggleable.
 

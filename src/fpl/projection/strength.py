@@ -51,6 +51,16 @@ snapshot could hold far fewer - from producing extreme ratings.
 PROMOTED_CLUB_SAMPLE = 3
 """How many of last season's worst clubs to average for a promoted club's starting rating."""
 
+DEFAULT_CURRENT_PRIOR_MATCHES = 5.0
+"""Current-season matches at which this season counts for as much as all of last season.
+
+Not fitted - one gameweek cannot fit anything - and deliberately gentler than the minutes ramp.
+Goals are noisier than team sheets: a club that has conceded six once is not a club that concedes
+six, whereas a manager who has picked the same eleven twice probably will again. At five matches
+the two seasons weigh equally, so a genuinely changed side is priced in by autumn without one
+thrashing rewriting a rating in August.
+"""
+
 
 @dataclass(frozen=True)
 class TeamRating:
@@ -80,8 +90,16 @@ class TeamRating:
         }
 
 
-def _prior_season_results(prior_season: str) -> tuple[dict[str, list[int]], float, float]:
-    """Read last season's finished fixtures.
+def _season_results(season: str, required: bool = True) -> tuple[dict[str, list[int]], float, float]:
+    """Read one season's finished fixtures.
+
+    Used for both seasons: last season's results are the base rating, and the current season's -
+    once any exist - are blended in on top. Same shape, same file layout, one function.
+
+    Parameters:
+    - required: raise when the season has no finished fixtures. True for the prior season, where
+      nothing can be rated without it; False for the current one, where "no matches yet" is the
+      normal August state and the caller falls back to the prior rating alone.
 
     Returns:
     - `{short_name: [goals_for, goals_against, matches]}`
@@ -93,12 +111,14 @@ def _prior_season_results(prior_season: str) -> tuple[dict[str, list[int]], floa
       prior season there is nothing to rate clubs on, and a caller must handle that explicitly
       rather than receive flat ratings.
     """
-    fixtures_store = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{prior_season}/fixtures"))
-    bootstrap_store = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{prior_season}/bootstrap"))
+    fixtures_store = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{season}/fixtures"))
+    bootstrap_store = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{season}/bootstrap"))
     if fixtures_store.find_latest() is None or bootstrap_store.find_latest() is None:
+        if not required:
+            return {}, 0.0, 1.0
         raise FileNotFoundError(
-            f"Need both data/{prior_season}/fixtures and data/{prior_season}/bootstrap to rate "
-            f"clubs. Fetch them with: uv run -m src.fpl.fetch --season {prior_season}"
+            f"Need both data/{season}/fixtures and data/{season}/bootstrap to rate "
+            f"clubs. Fetch them with: uv run -m src.fpl.fetch --season {season}"
         )
     short_names = {team['id']: team['short_name'] for team in bootstrap_store.load_latest()['teams']}
 
@@ -120,8 +140,10 @@ def _prior_season_results(prior_season: str) -> tuple[dict[str, list[int]], floa
 
     played = sum(row[2] for row in totals.values())
     if not played:
+        if not required:
+            return totals, 0.0, 1.0
         raise ValueError(
-            f"data/{prior_season}/fixtures holds no finished fixtures. Club ratings cannot be "
+            f"data/{season}/fixtures holds no finished fixtures. Club ratings cannot be "
             f"measured from it."
         )
     league_average = sum(row[0] for row in totals.values()) / played
@@ -133,18 +155,37 @@ class TeamStrength:
     """Fixture-level expectations derived from last season's goals.
 
     Parameters:
-    - season: the season being projected. Ratings come from the season before it.
+    - season: the season being projected. Ratings start from the season before it.
     - shrinkage_matches: prior weight pulling each rating toward 1.0.
+    - current_prior_matches: current-season matches at which this season weighs as much as all of
+      last season. `None` ignores the current season entirely, which is the historical behaviour
+      and the control. The league average and home advantage always come from the full prior
+      season - a league average measured over one gameweek is noise, not a baseline.
 
     Raises:
     - FileNotFoundError: if the prior season's snapshots are missing.
     """
 
-    def __init__(self, season: str | None = None, shrinkage_matches: float = DEFAULT_SHRINKAGE_MATCHES):
+    def __init__(
+        self,
+        season: str | None = None,
+        shrinkage_matches: float = DEFAULT_SHRINKAGE_MATCHES,
+        current_prior_matches: float | None = None,
+    ):
         self.season = season or Season.CURRENT
         self.prior_season = Season.previous(self.season)
-        totals, self.league_average_goals, self.home_advantage = _prior_season_results(self.prior_season)
+        totals, self.league_average_goals, self.home_advantage = _season_results(self.prior_season)
         self._shrinkage = shrinkage_matches
+        self._current_prior = current_prior_matches
+        current_totals: dict[str, list[int]] = {}
+        if current_prior_matches is not None:
+            if current_prior_matches <= 0:
+                raise ValueError(
+                    f"current_prior_matches must be positive, got {current_prior_matches}"
+                )
+            current_totals, _, _ = _season_results(self.season, required=False)
+        self.current_totals = current_totals
+        """This season's goals for and against per club, empty before a ball is kicked."""
         self.prior_ratings: dict[str, TeamRating] = {}
         """Every club rated from last season, relegated ones included. Needed to price a move."""
         self.ratings = self._build_ratings(totals)
@@ -173,20 +214,59 @@ class TeamStrength:
 
         ratings: dict[str, TeamRating] = {}
         promoted: list[str] = []
+        blended: list[str] = []
         for team in Query.all_teams():
             existing = measured.get(team.short_name)
-            if existing is not None:
-                ratings[team.short_name] = existing
-                continue
-            promoted.append(team.short_name)
+            prior = totals.get(team.short_name, [0, 0, 0])
+            current = self.current_totals.get(team.short_name, [0, 0, 0])
+            is_promoted = existing is None
+            weight = (
+                current[2] / (current[2] + self._current_prior)
+                if current[2] and self._current_prior else 0.0
+            )
+            if weight:
+                blended.append(team.short_name)
+            if is_promoted:
+                promoted.append(team.short_name)
+                # A promoted club has no rate of its own to blend, only the bottom-three
+                # placeholder - and that is already a *shrunk multiplier*. Putting it back through
+                # `_shrink` would shrink it twice and quietly drag every promoted club to the
+                # league average the moment they kicked a ball. So the blend happens in multiplier
+                # space here, with this season's rate shrunk on its own small sample first.
+                attack = promoted_attack
+                defence = promoted_defence
+                if weight:
+                    attack = (weight * self._shrink(current[0] / current[2], current[2])
+                              + (1 - weight) * promoted_attack)
+                    defence = (weight * self._shrink(current[1] / current[2], current[2])
+                               + (1 - weight) * promoted_defence)
+            else:
+                # An established club has real rates on both sides, so they blend before the one
+                # shrink, with the combined match count as its sample.
+                attack_rate = prior[0] / prior[2]
+                defence_rate = prior[1] / prior[2]
+                if weight:
+                    attack_rate = weight * (current[0] / current[2]) + (1 - weight) * attack_rate
+                    defence_rate = weight * (current[1] / current[2]) + (1 - weight) * defence_rate
+                evidence = prior[2] + current[2]
+                attack = self._shrink(attack_rate, evidence)
+                defence = self._shrink(defence_rate, evidence)
             ratings[team.short_name] = TeamRating(
                 short_name=team.short_name,
-                attack=promoted_attack,
-                defence=promoted_defence,
-                matches=0,
-                goals_for=0,
-                goals_against=0,
-                promoted=True,
+                attack=attack,
+                defence=defence,
+                matches=prior[2] + current[2],
+                goals_for=prior[0] + current[0],
+                goals_against=prior[1] + current[1],
+                promoted=is_promoted,
+            )
+        if blended:
+            sample = self.current_totals[blended[0]]
+            logger.info(
+                "Blending %d %s match(es) per club into the ratings for %d club(s): at %d played, "
+                "this season carries %.0f%% of the weight (current_prior_matches=%.1f).",
+                sample[2], self.season, len(blended), sample[2],
+                100 * sample[2] / (sample[2] + self._current_prior), self._current_prior,
             )
         if promoted:
             logger.info(

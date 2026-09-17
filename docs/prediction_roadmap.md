@@ -259,10 +259,24 @@ midfielders — FPL classifies most attackers as midfielders, so real No.9s are 
 3. Drop the price constraint from the draft path entirely — `src/fpl/dump/players.py` still keys on it.
 
 **Shipped** as `src/fpl/projection/vorp.py` plus the draft board in `src/web/`. Item 1 is done,
-including tier breaks. Item 2 is done in a manual form — the live draft board recomputes
-replacement level against whatever pool you mark as taken — but it is not yet driven from
-`PlayerPresences`, so in-season waiver valuation still needs wiring to who actually owns whom.
-Item 3 is unchanged: `src/fpl/dump/players.py` still keys on price.
+including tier breaks. Item 2 shipped as `#/waivers`, and the plan for it in this section was
+wrong in a way worth recording: it is **not** "the same VORP calculation against the unowned
+pool". A waiver is a swap inside a fixed fifteen, restricted by the game to the same position, so
+what it is worth is the change to your best legal eleven over the horizon — a signing who would
+sit on your bench gains nothing, whatever his VORP. `src/web/waivers.py` prices it that way over
+up to three horizons at once. Ownership does not come from `PlayerPresences` either: those are
+last deadline's picks, so a waiver processed since is invisible, and the draft entry ids behind
+them are re-issued every season. It comes from `league/{id}/element-status` via
+`src/fpl/loader/draft_league.py`. Item 3 is unchanged: `src/fpl/dump/players.py` still keys on
+price.
+
+One thing the waivers screen inherits and only half-fixes: after GW1 the minutes model is still
+the pre-season blend. It does now *see* played gameweeks - the role-evidence window runs to the
+projection's first gameweek, so GW1 line-ups count at five times a friendly - but at a weight
+fitted on friendlies, and the scoring *rates* still come entirely from last season. Measured on
+2026-08-26, including GW1 moves the draft board a mean 43 places against
+`v3-role-preseason-only`, in the right direction (GW1 starters up, GW1 non-starters down) and by
+an unfitted amount. Item 6 below is what settles it.
 
 One correction to the intuition in this section: taking the four best forwards does *not* raise
 replacement level. The pool and the picks remaining both shrink by four, so the same player is
@@ -306,18 +320,31 @@ Collected from the sections above, roughly in order of expected value:
    `src/fpl/projection/minutes.py`.
 4. **Opponent adjustment for defensive contribution.**
 5. **`selected_by_percent` and start streaks in the minutes model.**
-6. **Waiver valuation driven from `PlayerPresences`** rather than hand-marked picks.
-7. **Set-piece duty as a model input** rather than a board flag — the real gap is newly appointed
+6. **Fitting the two current-season ramps.** Both now exist and both are guesses:
+   `current_season_ramp` hands the minutes blend to the recent window over five gameweeks, and
+   `TeamStrength(current_prior_matches=5.0)` weighs this season equally with last at five matches.
+   `v4-form-minutes` and `v4-form-strength` isolate one lever each against `v3-role-trust`, so
+   scoring the four runs on GW2-6 outcomes is a well-posed experiment as soon as those gameweeks
+   resolve. Still untouched: the per-90 scoring rates ignore the current season entirely, which is
+   deliberate for now - xG over three matches is mostly noise and the existing shrinkage already
+   pulls it to the prior - but it is the third lever and it has no control yet.
+7. **Recovering 2025/26 GW31-38 per-match rows.** The snapshots were captured at GW30 and the FPL
+   API only serves the current season, so eight gameweeks of per-match evidence are missing from
+   every DC hit rate and minutes-per-start figure. Season totals are unaffected. A third-party
+   archive (vaastav/Fantasy-Premier-League on GitHub keeps full per-gameweek history) could backfill
+   it, at the cost of a new data source with its own identifier mapping - worth it before next
+   season's constants are refitted, not before this week's waiver.
+8. **Set-piece duty as a model input** rather than a board flag — the real gap is newly appointed
    takers, whose prior-season xG does not include the duty.
-8. **A fitted `RotationConfig.match_kind_weights[FRIENDLY]`**, replacing the 0.35 prior.
-9. **`src/fpl/dump/players.py` still keys on price** on the draft path.
-10. **The mover pre-season weight, fitted alongside the transfer discount.** Leave-one-club-out
+9. **A fitted `RotationConfig.match_kind_weights[FRIENDLY]`**, replacing the 0.35 prior.
+10. **`src/fpl/dump/players.py` still keys on price** on the draft path.
+11. **The mover pre-season weight, fitted alongside the transfer discount.** Leave-one-club-out
     cross-validation picks 1.0 for movers in all 20 folds, against the 0.60 shipped, but the
     harness that says so does not apply `transfer_role_multiplier` — so it is compensating for a
     discount the model already applies, and at 1.0 the discount becomes dead code. Needs one
     harness that fits both terms together. See "A transfer is not portable" in
     `src/fpl/projection/minutes.py`.
-11. **A second pre-season on disk.** Only 2025/26 has stored pre-season lineups, so every
+12. **A second pre-season on disk.** Only 2025/26 has stored pre-season lineups, so every
     constant in the minutes blend is fitted on one transition and validated by split half.
     Keeping 2026/27's lineups makes the first out-of-sample check possible next August.
 

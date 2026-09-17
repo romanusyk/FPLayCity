@@ -1,20 +1,35 @@
-"""
-LLM News Processor.
-Extracts structured facts from raw news articles using Gemini.
+"""LLM news processor: turns Scout articles into per-player facts.
+
+Reads the `raw` layer, asks an LLM what each article says about specific players, and writes the
+answer to the `extracted` layer for `src/fpl/loader/news/validate.py` to check.
+
+The model is reached through `claude -p` (`src/fpl/client/claude_cli.py`), which replaced a Gemini
+SDK client and its `GEMINI_API_KEY`. Two consequences worth knowing before editing this file: the
+CLI has no server-side JSON-schema mode, so `RESPONSE_SCHEMA` instructs the prompt and is checked
+after the fact; and the call runs in an empty directory with tools disabled, because `claude -p`
+started inside this repo reads `CLAUDE.md` and behaves like an engineering agent rather than an
+extractor.
+
+Nothing here judges whether a fact is *true* - only that an article said it. Player identity is
+checked in the validation layer, which is why that layer exists separately.
 """
 import argparse
 import asyncio
 import logging
 
-from src.fpl.client.gemini import GeminiClient
+from src.fpl.client.claude_cli import DEFAULT_MODEL, ClaudeCliClient
 from src.fpl.loader.news.pl import list_saved_news, SEASON
 from src.fpl.models.immutable import NewsModel
 from src.fpl.loader.store.json import JsonSnapshotStore, SnapshotSpec
 
+EXTRACTED_LAYER = 'extracted'
+"""Layer the LLM writes to. Named for what it holds, not who produced it: it was `gemini` until
+the extractor changed, and a directory named after a retired vendor is a lie that survives."""
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Schema for Gemini response
+# Instructed in the prompt and checked on the way back - the CLI has no structured-output mode.
 RESPONSE_SCHEMA = {
     "type": "array",
     "items": {
@@ -79,17 +94,16 @@ def get_players_context(season: str = SEASON) -> str:
     return "\n".join(context_lines)
 
 async def process_article(
-    client: GeminiClient, 
+    client: ClaudeCliClient,
     article: NewsModel, 
     rules_context: str, 
     players_context: str,
     season: str = SEASON
 ):
-    """Process a single article with Gemini."""
-    
-    # Define storage for this article's gemini output
-    # Path: data/{season}/news/{gw}/{collection}/gemini/{article_id}
-    base_path = f"data/{season}/news/{article.gameweek}/{article.collection}/gemini/{article.id}"
+    """Extract facts from one article and store them in the `extracted` layer."""
+
+    # Path: data/{season}/news/{gw}/{collection}/extracted/{article_id}
+    base_path = f"data/{season}/news/{article.gameweek}/{article.collection}/{EXTRACTED_LAYER}/{article.id}"
     store = JsonSnapshotStore(SnapshotSpec(base_path=base_path))
     
     async def fetch_from_llm() -> dict:
@@ -138,12 +152,10 @@ INSTRUCTIONS:
 OUTPUT FORMAT:
 JSON Array of objects with keys: player_id, web_name, fact, form, availability.
 """
-        logger.info(f"Processing article {article.id} with Gemini...")
-        with open("last_prompt.txt", "w") as f:
-            f.write(prompt)
-        # raise Exception("Stop here")
+        logger.info("Extracting facts from article %s via claude -p...", article.id)
         result = await client.generate_content(prompt, response_schema=RESPONSE_SCHEMA)
-        return {"facts": result}
+        logger.info("Article %s: %d fact(s) extracted.", article.id, len(result))
+        return {"facts": result, "model": client.model, "extractor": "claude-cli"}
 
     # Use get_or_fetch to handle caching
     # Freshness is set to very high number (e.g. 365 days) because once processed, the extraction for a static article shouldn't change much
@@ -153,7 +165,7 @@ JSON Array of objects with keys: player_id, web_name, fact, form, availability.
     await store.get_or_fetch(freshness=0, fetch_fn=fetch_from_llm)
 
 async def main_async(args):
-    client = GeminiClient()
+    client = ClaudeCliClient(model=args.model)
     
     logger.info("Loading context...")
     rules_context = STATIC_RULES
@@ -186,6 +198,7 @@ async def main_async(args):
                 logger.exception(f"Failed to process article {article.id}")
                 raise e
                 
+    client.close()
     logger.info(f"Finished. Processed {processed_count} articles.")
 
 def main():
@@ -201,6 +214,10 @@ def main():
         help="Filter by tag ID",
     )
     parser.add_argument("--article-id", type=int, action="append", help="Filter by article ID")
+    parser.add_argument(
+        "--model", default=DEFAULT_MODEL,
+        help=f"Model for `claude -p`. Default {DEFAULT_MODEL}.",
+    )
     
     args = parser.parse_args()
     

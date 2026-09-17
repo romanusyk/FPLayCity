@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 
+MAX_GAMEWEEK = 38
+"""Gameweeks in a Premier League season. The ceiling for any projected or fetched gameweek."""
+
+
 class Season:
     """Season directory names under `data/`, ordered oldest to newest.
 

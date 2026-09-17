@@ -400,6 +400,16 @@ class PriorSeasonSource(Enum):
     PARTIAL_IN_BOOTSTRAP = 'partial_in_bootstrap'
     """Bootstrap held a truncated total after a club change. Corrected from history_past."""
 
+    HISTORY_PAST_ONLY = 'history_past_only'
+    """Built from `history_past` with no cross-check, because the season had already started.
+
+    Once a gameweek is played, bootstrap's totals are *this* season's, so there is nothing to
+    reconcile against. `history_past` stays authoritative all season, so a player who joins the
+    game late - Wan-Bissaka, registered after the 2026/27 baseline was captured, with a
+    2,080-minute previous season - is still given his record rather than being treated as having
+    none.
+    """
+
 
 @dataclass
 class PlayerSeason(Measurable):

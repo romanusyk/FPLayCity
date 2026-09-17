@@ -187,7 +187,11 @@ class ProjectionEngine:
         self.evidence_season = Season.previous(self.season)
 
         self.histories = build_player_histories(self.season)
-        self.strength = TeamStrength(self.season, params.team_shrinkage_matches)
+        self.strength = TeamStrength(
+            self.season,
+            params.team_shrinkage_matches,
+            current_prior_matches=params.strength_current_prior_matches,
+        )
         self.rate_model = RateModel(
             Query.player_seasons_by_season(self.evidence_season),
             params.rate_shrinkage_minutes,
@@ -196,6 +200,10 @@ class ProjectionEngine:
             params.preseason_weight,
             trust_weight=params.preseason_trust_weight,
             role_knots=params.preseason_role_knots,
+            # Gameweeks already played when the horizon starts. A GW6-15 run has five of them, and
+            # by then who has actually been picked outranks last season's start share.
+            played_gameweeks=max(0, params.gameweek_from - 1),
+            current_season_full_matches=params.current_season_full_matches,
         )
         self.defensive_model = DefensiveContributionModel(params.dc_shrinkage_starts)
         self.preseason = (
@@ -205,7 +213,7 @@ class ProjectionEngine:
                     MatchKind.COMPETITIVE: 1.0,
                     MatchKind.FRIENDLY: params.preseason_friendly_weight,
                 }),
-                before_gameweek=params.gameweek_from,
+                before_gameweek=params.role_evidence_before_gameweek or params.gameweek_from,
             )
             if params.use_preseason else {}
         )

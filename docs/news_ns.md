@@ -56,14 +56,14 @@ data/2025-2026/news/<gameweek_id>/<news_collection>/<layer>/<news_id>.json
 - `news_collection`: Data source identifier (e.g., `"fpl_scout"`). Initially only `"fpl_scout"` is supported.
 - `layer`: Processing stage
   - `"raw"`: Original fetched data from the news provider.
-  - `"gemini"`: Raw, unvalidated structured output from the LLM (Gemini).
+  - `"extracted"`: Raw, unvalidated structured output from the LLM. Called `"gemini"` before the extractor became `claude -p`; the old name is still *read* (see `LEGACY_EXTRACTED_LAYERS`) and never written.
   - `"facts"`: Validated and parsed facts (NewsFact objects).
 - `news_id`: Provider-assigned article identifier.
 
 **Rationale**: This structure supports:
 - Time-based organization (facts organized by target gameweek for efficient filtering)
 - Multi-source aggregation (different collections can be merged)
-- Processing pipeline visibility (raw → gemini → facts)
+- Processing pipeline visibility (raw → extracted → facts)
 - Efficient lookups by gameweek, source, or article ID
 
 **Note**: Facts are never expired or deleted. The primary use case is reading news and facts for the most recent available gameweek, but historical facts remain accessible for analysis.
@@ -91,16 +91,16 @@ The collection infrastructure exists in `src/fpl/loader/news/pl.py`:
 
 The fact extraction process is split into distinct stages to separate expensive LLM calls from validation logic.
 
-### Stage 1: LLM Processing ("Gemini" Layer)
+### Stage 1: LLM Processing ("extracted" Layer)
 
-**Script**: Reads from `"raw"`, calls LLM, writes to `"gemini"`.
+**Script**: Reads from `"raw"`, calls the LLM through `claude -p`, writes to `"extracted"`.
 
 **Input**:
 1. Raw news article (title, summary, body) and target gameweek.
 2. **Player Context**: A full dump of all FPL players containing `player_id`, `web_name`, `team` (3-letter code), and `price`. This context helps the LLM ground its extraction in actual player data.
 
 **Process**:
-- The LLM (Gemini) is prompted to extract facts and map them to specific players from the provided context list.
+- The LLM is prompted to extract facts and map them to specific players from the provided context list. It runs through `ClaudeCliClient` in `src/fpl/client/claude_cli.py`: no API key, an empty working directory so no project `CLAUDE.md` is loaded, and tools disabled so the article text is the only source.
 - **Output Format**: Structured JSON where each item contains:
   - `player_id`: The ID from the provided list.
   - `web_name`: The name from the provided list (for validation).
@@ -108,14 +108,14 @@ The fact extraction process is split into distinct stages to separate expensive 
   - `form`: Impact on player form, range `[-1, 1]`.
   - `availability`: Impact on player availability, range `[-1, 1]`.
 
-**Storage**: The raw JSON response from Gemini is saved to the `"gemini"` layer using `src/fpl/loader/store/json.py`. This store handles timestamping and file management (checking if up-to-date, reading, writing), effectively serving as the cache.
+**Storage**: The raw JSON response is saved to the `"extracted"` layer using `src/fpl/loader/store/json.py`. This store handles timestamping and file management (checking if up-to-date, reading, writing), effectively serving as the cache.
 
 ### Stage 2: Validation and Parsing ("Facts" Layer)
 
-**Script**: Reads from `"gemini"`, validates, writes to `"facts"`.
+**Script**: Reads from `"extracted"`, validates, writes to `"facts"`.
 
 **Process**:
-1. Read the latest entry from the `"gemini"` layer for a given article.
+1. Read the latest entry from the `"extracted"` layer for a given article.
 2. **Validation**: For each extracted fact, verify that the returned `web_name` matches the `web_name` associated with the returned `player_id` in our system.
    - **Failure Policy**: If there is a mismatch, the script **fails loudly**. We do not attempt fuzzy matching or guessing at this stage. Before failing, list all the names that don't match.
 3. **Transformation**: Convert validated data into a list of `NewsFact` objects.
@@ -124,11 +124,11 @@ The fact extraction process is split into distinct stages to separate expensive 
 
 ### Schema and Converters
 
-Both the "gemini" (cache) and "facts" layers rely on shared schemas and converter functions defined in `src/fpl/loader/convert/news.py`. This ensures consistency between the raw LLM output and the final validated facts.
+Both the "extracted" (cache) and "facts" layers rely on shared schemas and converter functions defined in `src/fpl/loader/convert/news.py`. This ensures consistency between the raw LLM output and the final validated facts.
 
 The final flow for the news page and processing consists of three scripts:
 1. **Fetch**: Downloads raw news to `raw` layer.
-2. **LLM**: Extracts structured data to `gemini` layer.
+2. **LLM**: Extracts structured data to the `extracted` layer.
 3. **Validate**: Validates and parses data to `facts` layer.
 
 ---

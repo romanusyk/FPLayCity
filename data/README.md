@@ -86,6 +86,35 @@ This folder stores season-scoped, timestamped snapshots captured from external s
   - Deliberately outside the run artifacts: marking a player taken changes replacement level and
     therefore VORP, but never a projection
 
+- **fpl_entry.json + fpl_managers/**: Which classic-FPL team is ours, and the fifteen it held.
+  - Paths: `data/fpl_entry.json` (config: entry id plus the team and manager name the API gave for
+    it) and `data/<season>/fpl_managers/<entry_id>/picks/<gameweek>_<ts>.json`
+  - Written by: `./run.sh -m src.fpl.squad [--entry ID|--refresh]` and, incidentally, every
+    `./run.sh -m src.fpl.fetch`, via `src/fpl/loader/fpl_squad.py`
+  - Read by: the FPL board's squad filter (`src/web/api.py`) and the older in-season path through
+    `PlayerPresences`
+  - **Not season-scoped, unlike the draft config**, because classic entry ids really are permanent.
+    The *picks* are season-scoped: they are element ids, and those are reassigned every July
+  - **Not committed, and not hardcoded either.** `FplManager.ME = 2486591` lived in source from
+    December 2025 and belongs to somebody else entirely; a permanent id is a *stable* wrong answer,
+    which never breaks loudly enough to be noticed. The connect command fetches the entry and
+    prints whose team it is before saving anything
+  - One gameweek behind by construction: FPL publishes a squad only after its deadline, so the
+    freshest picks that exist anywhere are the last started gameweek's
+
+- **draft_league.json + draft_league/**: Which draft league is ours, and who owns whom in it.
+  - Paths: `data/<season>/draft_league.json` (config: league id, our entry id, the names behind
+    them) and `data/<season>/draft_league/<league_id>/{details,element_status}_<ts>.json`
+    (single-snapshot resources, refetched every time)
+  - Written by: `./run.sh -m src.fpl.league [--entry ID|--refresh]`, via
+    `src/fpl/loader/draft_league.py`
+  - Read by: the waivers screen (`src/web/waivers.py`), which needs the free-agent pool and our
+    fifteen before it can price a swap
+  - **Season-scoped by necessity, and not committed.** Draft entry and league ids are re-issued
+    every season - entry 52242 was ours in 2025/26 and belongs to a stranger now - so a config
+    read under the wrong season raises rather than valuing somebody else's squad
+  - Always refetched, never cached: ownership changes the moment another manager's claim clears
+
 - **dumps**: Small, human-friendly exports generated from the latest snapshots.
   - Fixture Difficulty (FDR):
     - Files: `fdr.csv`, `fdr.json`, `fdr.txt`
@@ -119,10 +148,15 @@ This folder stores season-scoped, timestamped snapshots captured from external s
 6) **Projection runs** (after every refresh, and after every model change):
    - `./run.sh -m src.fpl.project [--game draft|fpl] [--method NAME] [--keep N]` → writes
      `data/<season>/runs/<game>/<run_id>.json` and prunes older runs.
-   - `./refresh.sh` chains steps 2, 4 and 6 in one command.
+   - `./refresh.sh` chains steps 2, 4, 6 and league ownership in one command.
    - Serve them with `./run.sh -m src.web.serve`.
 
-7) **Derived dumps** (optional exports):
+7) **Draft league ownership** (in-season, before each waiver deadline):
+   - Once per season: `./run.sh -m src.fpl.league --entry <id>` → writes
+     `data/<season>/draft_league.json` and the first league snapshots.
+   - Then: `./run.sh -m src.fpl.league --refresh` (also run by `./refresh.sh`).
+
+8) **Derived dumps** (optional exports):
    - FDR: `python -m src.fpl.dump.fdr [--first-gw N --last-gw M]` → writes `dumps/fdr.*`
    - Players: `python -m src.fpl.dump.players` → writes `dumps/players.*`
 
@@ -142,6 +176,8 @@ This folder stores season-scoped, timestamped snapshots captured from external s
 - Prior-season baseline: `src/fpl/loader/baseline.py`
 - Projection runs, feedback: `src/fpl/projection/artifacts.py`, `src/fpl/projection/feedback.py`
 - Draft state: `src/web/draft_state.py`
+- Draft league ownership: `src/fpl/loader/draft_league.py`, CLI `src/fpl/league.py`
+- Our classic-FPL team: `src/fpl/loader/fpl_squad.py`, CLI `src/fpl/squad.py`
 - Season names and windows: `src/fpl/loader/utils.py`
 - Snapshot store (filename construction, freshness, persistence): `src/fpl/loader/store/json.py`
 - FotMob capture and reader: `src/fotmob/load.py` (models in `src/fotmob/models/fotmob.py`)
@@ -154,5 +190,5 @@ This folder stores season-scoped, timestamped snapshots captured from external s
 - FotMob adapter design and flow — `src/fotmob/README.md` (how match details are captured and consumed)
 - News loader — `src/fpl/loader/news/README.md` (source, pagination, CLI examples)
 - Projection engine and run artifacts — `src/fpl/projection/README.md` (how a run is produced and what is in it)
-- Review app — `src/web/README.md` (what reads the runs, and how feedback is recorded)
+- Review app — `src/web/README.md` (what reads the runs, how waivers are valued, and how feedback is recorded)
 - Documentation standards — `docs/metadoc.md` (top‑down structure, linking, symbol+path references)

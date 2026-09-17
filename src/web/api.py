@@ -13,6 +13,7 @@ Route groups
 - `/api/compare`   - two runs of the same game, by rank movement
 - `/api/feedback`  - record and read disagreements
 - `/api/draft`     - live draft state
+- `/api/waivers`   - in-season swaps: what a free agent would add to your own squad
 - `/api/calibration` - scores runs against actual results once gameweeks resolve
 
 Errors are HTTP 4xx with the same message the CLI would print, rather than an empty table. A
@@ -29,14 +30,21 @@ from pydantic import BaseModel, Field
 from src.fpl.loader.utils import Season
 from src.fpl.models.immutable import PlayerType, Query
 from src.fpl.projection import artifacts, feedback as feedback_store
-from src.fpl.projection.methods import DRAFT, GAMES, METHODS
+from src.fpl.projection.methods import DEFAULT_METHOD, DRAFT, FPL, GAMES, METHODS
 from src.fpl.projection.vorp import (
     DRAFT_SQUAD_SLOTS,
     DRAFT_STARTING_SLOTS,
     ReplacementLevel,
     tier_breaks,
 )
-from src.web import calibration, draft_state, opportunity
+from src.fpl.loader import draft_league, fpl_squad
+from src.web import (
+    calibration,
+    draft_state,
+    opportunity,
+    transfers as transfers_module,
+    waivers as waivers_module,
+)
 from src.web.context import AppContext
 
 
@@ -93,6 +101,11 @@ def _resolve_run(game: str, run_id: str | None) -> dict:
         raise HTTPException(400, f"Unknown game '{game}'. Known: {', '.join(GAMES)}")
     if run_id is None:
         summaries = artifacts.list_runs(season, game)
+        # Newest run *of the default method*, not simply the newest run. Generating a control
+        # would otherwise silently become what every default page load shows, and a control is
+        # by definition the board you do not want to act on.
+        preferred = [s for s in summaries if s.method == DEFAULT_METHOD]
+        summaries = preferred or summaries
         if not summaries:
             raise HTTPException(
                 404,
@@ -114,6 +127,95 @@ def _slim(row: dict) -> dict:
     return slim
 
 
+def _board_row(row: dict, gameweeks: list[int], horizons: tuple[int, ...]) -> dict:
+    """A slim row plus its horizon columns.
+
+    `points` and every component stay what the run says they are: totals over the *whole* run.
+    They cannot be sliced - the artifact stores points per fixture but components only in total -
+    so the horizon columns are separate rather than a re-scaling of them, and the page says which
+    is which. Per-gameweek here divides by gameweeks in the horizon, not by fixtures played, so a
+    blank counts as the zero it is.
+    """
+    totals = waivers_module.horizon_totals(row, gameweeks, horizons)
+    price = row['price']
+    slim = dict(_slim(row), vorp=row['vorp'])
+    slim['horizon_points'] = totals['points']
+    slim['horizon_blanks'] = totals['blanks']
+    slim['horizon_per_gameweek'] = {
+        horizon: round(points / horizon, 3) for horizon, points in totals['points'].items()
+    }
+    slim['horizon_per_million'] = {
+        horizon: round(points / price, 3) if price else 0.0
+        for horizon, points in totals['points'].items()
+    }
+    return slim
+
+
+def _squad_block(
+    run: dict, rows: list[dict], gameweeks: list[int], horizons: tuple[int, ...], deciding: int,
+) -> dict | None:
+    """Tag the rows we own and value the squad, for a classic-FPL board.
+
+    Mutates `rows`: each of our fifteen gets a `squad` dict (slot, captaincy, bench) and everyone
+    else gets None, which is what the board filters on. Returns the squad header, or None when no
+    team is connected or nothing has been published for it yet - both are normal states, and the
+    board renders without the filter rather than erroring.
+
+    The valuation is the best legal XI at each horizon, reusing `SquadValuation` - a classic squad
+    is 2/5/5/3 and starts eleven under the same formation rules as a draft squad. Two things it is
+    deliberately not: it does not double the captain (who you will captain in GW+2 is not known,
+    and the stored armband is last gameweek's), and it does not model auto-subs. It is what your
+    fifteen are worth if you pick the best eleven each week, which is the number a transfer moves.
+
+    A squad player missing from the run is reported by name rather than raised on: the board must
+    still render. Missing anyone means no valuation, because a fourteen-player XI is not a number.
+    """
+    entry = _fpl_entry(_context().season)
+    if entry is None or entry['squad'] is None:
+        return None
+    squad = entry['squad']
+    picks = {pick['element']: pick for pick in squad['picks']}
+    by_id = {row['player_id']: row for row in rows}
+    for row in rows:
+        row['squad'] = picks.get(row['player_id'])
+
+    stored = {row['player_id']: row for row in run['players']}
+    missing = [element for element in picks if element not in stored]
+    points = None
+    if not missing:
+        try:
+            valuation = waivers_module.SquadValuation(
+                [stored[element] for element in picks], gameweeks)
+            points = {horizon: round(valuation.baseline(horizon), 2) for horizon in horizons}
+        except ValueError as exc:
+            # A squad that is not 2/5/5/3 by the time it reaches here is a real inconsistency, but
+            # it is not worth a blank board: report it beside the filter.
+            logger.warning("Not valuing the squad: %s", exc)
+            missing = []
+            points = None
+    else:
+        logger.info(
+            "%d squad player(s) have no row in run %s and the squad is not valued: %s",
+            len(missing), run['run_id'], missing,
+        )
+    return {
+        'entry_id': squad['entry_id'],
+        'entry_name': squad['entry_name'],
+        'manager': squad['manager'],
+        'gameweek': squad['gameweek'],
+        'captured_at': squad['captured_at'],
+        'active_chip': squad['active_chip'],
+        'size': len(picks),
+        'points': points,
+        'sort_horizon': deciding,
+        'missing': [
+            {'element': element, 'web_name': by_id[element]['web_name']}
+            if element in by_id else {'element': element, 'web_name': None}
+            for element in missing
+        ],
+    }
+
+
 @router.get('/config')
 def config() -> dict:
     """Everything the page needs before it can render anything."""
@@ -123,12 +225,58 @@ def config() -> dict:
         'games': list(GAMES),
         'next_gameweek': context.next_gameweek,
         'methods': {name: entry.as_dict() for name, entry in METHODS.items()},
+        'default_method': DEFAULT_METHOD,
         'positions': [position.name for position in PlayerType if position is not PlayerType.MNG],
         'teams': sorted(team.short_name for team in Query.all_teams()),
         'reasons': list(feedback_store.REASONS),
         'draft_roster_slots': {p.name: n for p, n in DRAFT_SQUAD_SLOTS.items()},
         'draft_starting_slots': {p.name: n for p, n in DRAFT_STARTING_SLOTS.items()},
+        'waivers': {
+            'horizon_limit': waivers_module.HORIZON_LIMIT,
+            'max_horizons': waivers_module.MAX_HORIZONS,
+            'default_horizons': list(waivers_module.DEFAULT_HORIZONS),
+            'league': _league_config(context.season),
+        },
+        'fpl_entry': _fpl_entry(context.season),
     }
+
+
+def _fpl_entry(season: str) -> dict | None:
+    """Our classic-FPL team and the squad we hold, or None when none is connected.
+
+    Two separate absences, both normal, both reported rather than raised: no team connected (a
+    fresh checkout) and a team with no published picks yet (before GW1 has started). The FPL board
+    offers its squad filter only when both are present, and says which command to run when they
+    are not. A *broken* config still raises - a typo must not read as "no team".
+    """
+    config = fpl_squad.load_config_or_none()
+    if config is None:
+        return None
+    entry = dict(config.as_dict(), squad=None, note=None)
+    try:
+        squad = fpl_squad.load_squad(season, config=config)
+    except FileNotFoundError as exc:
+        entry['note'] = str(exc)
+        return entry
+    except ValueError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    entry['squad'] = squad.as_dict()
+    return entry
+
+
+def _league_config(season: str) -> dict | None:
+    """The connected draft league, or None when there is not one yet.
+
+    A missing league is a normal state - it is what a fresh checkout looks like - so it is
+    reported rather than raised, and the waivers page turns it into instructions. A *broken*
+    config still raises: silently treating it as absent would hide a typo in real ids.
+    """
+    try:
+        return draft_league.load_config(season).as_dict()
+    except FileNotFoundError:
+        return None
+    except ValueError as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @router.get('/runs')
@@ -144,6 +292,8 @@ def board(
     run_id: str | None = None,
     live: bool = False,
     picks_until_next_turn: int | None = None,
+    horizons: str | None = None,
+    sort_horizon: int | None = None,
 ) -> dict:
     """A sortable table for one game.
 
@@ -154,12 +304,38 @@ def board(
       round costs at each position.
     - picks_until_next_turn: how many players get taken before your next pick, for the waiting
       simulation. Defaults to `2 * (managers - 1)`.
+    - horizons: up to three comma-separated gameweek counts, e.g. `1,3,5`, each of which must fit
+      inside the run. Every row carries its points at each of them, so a one-week punt and a
+      five-week hold are visible in the same line. Parsed by the same rules as the waivers page
+      (`src/web/waivers.py`) - one definition of what "3 GW" means, for both screens.
+    - sort_horizon: which of them ranks a classic-FPL board, and drives its per-gameweek and
+      per-million columns. Defaults to the middle one requested. The draft board still ranks on
+      VORP, which is priced over the whole run and has no horizon.
+
+    Errors:
+    - 400 for an unusable horizon, or a run too short for one.
     """
     run = _resolve_run(game, run_id)
-    rows = [dict(_slim(row), vorp=row['vorp']) for row in run['players']]
+    try:
+        wanted = (
+            waivers_module.default_horizons_for(run) if not horizons
+            else waivers_module.parse_horizons(horizons)
+        )
+        gameweeks = waivers_module.span_gameweeks(run, wanted)
+        deciding = waivers_module.resolve_sort_horizon(wanted, sort_horizon)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    rows = [_board_row(row, gameweeks, wanted) for row in run['players']]
     replacement = run['replacement_level']
     state = None
     waiting = None
+    if game == FPL:
+        # Explicitly None rather than absent, so a board with no team connected filters the same
+        # way as one where a player simply is not ours.
+        for row in rows:
+            row['squad'] = None
+    squad = _squad_block(run, rows, gameweeks, wanted, deciding) if game == FPL else None
 
     if game == DRAFT and live:
         state = draft_state.load(_context().season)
@@ -184,10 +360,21 @@ def board(
         for row in rows:
             row['drop_next'] = drops.get(row['player_id'])
 
-    rows.sort(key=lambda row: -row['vorp'] if game == DRAFT else -row['points'])
+    # Explicit tie-break: two players on the same VORP must land in the same order in the stored
+    # board and the live one, and float dust is not an ordering. A classic-FPL board ranks on the
+    # deciding horizon rather than the run total, so the number in the '#' column and the column
+    # you are deciding on always agree.
+    rows.sort(key=lambda row: (
+        -row['vorp'] if game == DRAFT else -row['horizon_points'][deciding],
+        -row['points'], row['player_id'],
+    ))
     ranked = _with_tiers(rows, game)
     return {
         'run': _run_header(run),
+        'horizons': list(wanted),
+        'sort_horizon': deciding,
+        'gameweeks': gameweeks,
+        'squad': squad,
         'replacement_level': replacement,
         'waiting': waiting,
         'players': ranked,
@@ -316,7 +503,7 @@ def player(
         'news': fpl_player.news,
         'status': fpl_player.status,
         'set_piece_roles': fpl_player.set_piece_roles,
-        'history': _history_rows(history, fpl_player.player_type),
+        'history': _history_rows(history, fpl_player.player_type, context.season),
         'history_coverage': history.coverage if history else {},
         'feedback': [
             entry.as_dict() for entry in context.feedback_for(player_id)
@@ -324,19 +511,25 @@ def player(
     }
 
 
-def _history_rows(history, position: PlayerType) -> list[dict]:
-    """Per-match rows for the detail strip, newest last.
+def _history_rows(history, position: PlayerType, season: str) -> list[dict]:
+    """Per-match rows for the detail strip and the game log, newest last.
 
     Includes whether each match cleared the defensive threshold, because that is the whole
     argument for using a hit rate rather than a mean and it should be visible match by match
     rather than summarised into a percentage you have to take on trust.
+
+    The scoreline is attached only for matches in the loaded season. Fixture ids are season-scoped
+    like every other FPL id, so looking last season's up against this season's fixtures would
+    silently return the wrong match rather than nothing.
     """
     if history is None:
         return []
-    return [
-        {
+    rows = []
+    for match in history.matches:
+        row = {
             'season': match.season,
             'gameweek': match.gameweek,
+            'kickoff': match.kickoff_time[:10] if match.kickoff_time else None,
             'opponent': match.opponent,
             'was_home': match.was_home,
             'minutes': match.minutes,
@@ -345,14 +538,28 @@ def _history_rows(history, position: PlayerType) -> list[dict]:
             'goals': match.goals_scored,
             'assists': match.assists,
             'clean_sheet': bool(match.clean_sheets),
+            'goals_conceded': match.goals_conceded,
+            'saves': match.saves,
+            'cards': match.yellow_cards + match.red_cards,
+            'own_goals': match.own_goals,
             'defensive_actions': match.defensive_contribution,
             'defensive_hit': match.cleared_defensive_threshold(position),
             'bonus': match.bonus,
+            'bps': match.bps,
             'expected_goals': round(match.expected_goals, 2),
             'expected_assists': round(match.expected_assists, 2),
+            'expected_goals_conceded': round(match.expected_goals_conceded, 2),
+            'team_score': None,
+            'opponent_score': None,
         }
-        for match in history.matches
-    ]
+        if match.season == season:
+            fixture = Query.fixture(match.fixture_id)
+            if fixture.finished:
+                mine, theirs = (fixture.home, fixture.away) if match.was_home else (fixture.away, fixture.home)
+                row['team_score'] = mine.score
+                row['opponent_score'] = theirs.score
+        rows.append(row)
+    return rows
 
 
 @router.get('/compare')
@@ -486,6 +693,114 @@ def reset_draft_state() -> dict:
     state = draft_state.DraftState(season=_context().season)
     draft_state.save(state)
     return state.as_dict()
+
+
+@router.get('/waivers')
+def waiver_board(
+    run_id: str | None = None,
+    horizons: str | None = None,
+    sort_horizon: int | None = None,
+    include_locked: bool = False,
+    limit: int = waivers_module.DEFAULT_LIMIT,
+) -> dict:
+    """Rank free agents by what they would add to your own draft squad.
+
+    Parameters:
+    - horizons: up to three comma-separated gameweek counts, e.g. `1,3,5`. Each must fit inside
+      the run. Omitted, they fall back to the defaults the run can answer.
+    - sort_horizon: which of them ranks the table. Defaults to the middle one.
+    - include_locked: also rank players who cannot be claimed until the next deadline.
+
+    Errors:
+    - 409 when no draft league is connected, or it has never been fetched. The message carries
+      the command that fixes it, because a page that renders an empty waiver table is worse than
+      one that says what to run.
+    - 400 for an unusable horizon, or a run too short for it. Horizons are validated before
+      anything is read, so a bad request says so whether or not a league is connected.
+    """
+    try:
+        wanted = waivers_module.parse_horizons(horizons)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    run = _resolve_run(DRAFT, run_id)
+    if not horizons:
+        wanted = waivers_module.default_horizons_for(run)
+    try:
+        ownership = draft_league.load_ownership(_context().season)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    try:
+        board = waivers_module.waiver_board(
+            run=run,
+            ownership=ownership,
+            horizons=wanted,
+            sort_horizon=sort_horizon,
+            include_locked=include_locked,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    board['run'] = _run_header(run)
+    board['next_gameweek'] = _context().next_gameweek
+    return board
+
+
+@router.get('/transfers')
+def transfer_board(
+    run_id: str | None = None,
+    horizons: str | None = None,
+    sort_horizon: int | None = None,
+    free_transfers: int = transfers_module.DEFAULT_FREE_TRANSFERS,
+    limit: int = waivers_module.DEFAULT_LIMIT,
+) -> dict:
+    """Rank affordable classic-FPL transfers by what they add to your own fifteen.
+
+    The FPL-side counterpart of `/waivers`, and deliberately the same metric - best legal XI
+    before and after the swap - narrowed by the three things the classic game adds: a budget, a
+    three-per-club cap, and a 4-point hit past your free transfers. See `src/web/transfers.py`.
+
+    Parameters:
+    - horizons: up to three comma-separated gameweek counts, e.g. `1,3,5`.
+    - sort_horizon: which of them ranks the table. Defaults to the middle one.
+    - free_transfers: how many transfers cost nothing this week. Not published by the API, so it
+      is yours to set; it moves `net`, never `gain`.
+
+    Errors:
+    - 409 when no classic team is connected, or nothing has been published for it yet. The message
+      carries the command that fixes it.
+    - 400 for an unusable horizon, a run too short for it, or a squad that cannot be priced.
+    """
+    try:
+        wanted = waivers_module.parse_horizons(horizons)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    run = _resolve_run(FPL, run_id)
+    if not horizons:
+        wanted = waivers_module.default_horizons_for(run)
+    config = fpl_squad.load_config_or_none()
+    if config is None:
+        raise HTTPException(409, (
+            "No classic-FPL team connected, so there is nothing to price a transfer against. "
+            "Connect yours with: ./run.sh -m src.fpl.squad --entry <your entry id>"
+        ))
+    try:
+        squad = fpl_squad.load_squad(_context().season, config=config)
+    except FileNotFoundError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    try:
+        board = transfers_module.transfer_board(
+            run=run,
+            squad=squad,
+            horizons=wanted,
+            sort_horizon=sort_horizon,
+            free_transfers=free_transfers,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    board['run'] = _run_header(run)
+    board['next_gameweek'] = _context().next_gameweek
+    return board
 
 
 @router.get('/calibration')

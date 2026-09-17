@@ -4,14 +4,36 @@ Fantasy Premier League stats & predictions
 ## Start here
 
 ```bash
-./refresh.sh              # fetch FPL + FotMob, then project both games
+./refresh.sh              # fetch FPL + FotMob + league ownership, then project both games
 ./run.sh -m src.web.serve   # review app on http://127.0.0.1:8000
 ```
 
-The review app is the front door. It serves a draft board ranked by value over replacement, an
-FPL board ranked by points and price, a per-player breakdown of where every projected point
-comes from, and a comparison view for two runs of the same game. Every column explains itself on
+The review app is the front door. It serves a draft board ranked by value over replacement, a
+waivers screen that prices a free agent against your own squad over three horizons at once, an
+FPL board ranked by points at those same three horizons with price and ownership beside them, a
+transfers screen that prices a classic-FPL swap against your own fifteen after the budget, the
+three-per-club cap and the 4-point hit, a per-player breakdown of where every projected point comes
+from, and a comparison view for two runs of the same game. Every column explains itself on
 hover, and `#/glossary` collects those explanations on one page.
+
+The FPL board needs to know which classic team is yours before it can tell your players from
+everyone else's — once, ever, since classic entry ids are permanent:
+
+```bash
+./run.sh -m src.fpl.squad --entry 2486591   # the number in your team page's address
+./run.sh -m src.fpl.squad --show            # print your fifteen, offline
+```
+
+It fetches the entry and prints the team and manager name before saving anything, so a mistyped id
+shows up as a stranger's team rather than as fifteen wrong players on a board. That is not
+hypothetical: the id above is the one this repo had hardcoded, and it belongs to somebody else.
+
+The waivers screen needs to know which draft league is yours, once per season:
+
+```bash
+./run.sh -m src.fpl.league --entry 12345   # the number in your team page's address
+./run.sh -m src.fpl.league --refresh       # before each waiver deadline
+```
 
 These docs cover the rest:
 

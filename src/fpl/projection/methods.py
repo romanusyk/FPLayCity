@@ -22,13 +22,14 @@ from dataclasses import asdict, dataclass, fields
 
 from src.fpl.projection.defensive import DEFAULT_SHRINKAGE_STARTS
 from src.fpl.projection.minutes import (
+    CURRENT_SEASON_FULL_MATCHES,
     DEFAULT_PRESEASON_FRIENDLY_WEIGHT,
     DEFAULT_PRESEASON_WEIGHT,
     PRESEASON_ROLE_KNOTS,
     PRESEASON_TRUST_WEIGHT,
 )
 from src.fpl.projection.rates import SHRINKAGE_MINUTES
-from src.fpl.projection.strength import DEFAULT_SHRINKAGE_MATCHES
+from src.fpl.projection.strength import DEFAULT_CURRENT_PRIOR_MATCHES, DEFAULT_SHRINKAGE_MATCHES
 
 
 DRAFT = 'draft'
@@ -49,6 +50,34 @@ class ProjectionParams:
     preseason_trust_weight: float = PRESEASON_TRUST_WEIGHT
     preseason_role_knots: tuple[float, float, float] | None = PRESEASON_ROLE_KNOTS
     """Pre-season weight by last season's start share. None falls back to the flat weight."""
+    role_evidence_before_gameweek: int | None = None
+    """Deadline that closes the role-evidence window. None means the projection's own start.
+
+    Every match stored before this gameweek's deadline feeds `build_preseason_roles`, weighted by
+    kind - a friendly at `preseason_friendly_weight`, a competitive fixture at 1.0. Before GW1 the
+    two settings are identical, which is why this only became a choice once a gameweek had been
+    played:
+
+    - `None` uses everything up to the first projected gameweek, so a GW2-11 run counts GW1's real
+      line-ups at five times a friendly. That is the same mechanism that put Raya back above Kepa
+      off one Community Shield, applied to better evidence.
+    - An int pins the window. `1` is the pre-season window, which is the configuration every
+      constant in `src/fpl/projection/minutes.py` was fitted in.
+
+    Which is better is not yet measured - one gameweek is not a fit - so `v3-role-preseason-only`
+    exists as the control.
+    """
+    current_season_full_matches: float | None = None
+    """Played gameweeks at which the recent-matches term fully replaces last season's start share.
+
+    None keeps the fitted pre-season behaviour at every point in the season, which is what every
+    method coined before 2026-08-26 meant and is therefore what they keep. See
+    `current_season_ramp` in `src/fpl/projection/minutes.py`.
+    """
+    strength_current_prior_matches: float | None = None
+    """Current-season matches at which this season weighs as much as all of last season, in the
+    club ratings. None ignores the current season, which is the historical behaviour. See
+    `TeamStrength` in `src/fpl/projection/strength.py`."""
     use_preseason: bool = True
     team_shrinkage_matches: float = DEFAULT_SHRINKAGE_MATCHES
     rate_shrinkage_minutes: float = SHRINKAGE_MINUTES
@@ -174,10 +203,62 @@ METHODS: dict[str, ProjectionMethod] = {
         ),
         params=FLAT_ROLE.replace(discount_transfers=True),
     ),
+    'v3-role-preseason-only': ProjectionMethod(
+        name='v3-role-preseason-only',
+        notes=(
+            'Control for v3-role-trust once a gameweek has been played: role evidence is cut off '
+            'at the GW1 deadline, so played gameweeks are ignored and the minutes blend runs in '
+            'exactly the configuration its constants were fitted in. The default counts GW1 '
+            'line-ups at five times a friendly instead. Diff the two to see what the played '
+            'gameweeks are doing; before GW1 the pair are identical.'
+        ),
+        params=BASELINE.replace(discount_transfers=True, role_evidence_before_gameweek=1),
+    ),
+    'v4-form-minutes': ProjectionMethod(
+        name='v4-form-minutes',
+        notes=(
+            'v3-role-trust plus a ramp on the minutes blend: the weight on recent matches walks '
+            'from the fitted pre-season curve to 1.0 over the first five gameweeks, so who a '
+            'manager has actually been picking takes over from last season\'s start share as the '
+            'evidence accumulates. Inert before GW1. One parameter away from v3-role-trust.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True, current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+        ),
+    ),
+    'v4-form-strength': ProjectionMethod(
+        name='v4-form-strength',
+        notes=(
+            'v3-role-trust plus current-season results in the club ratings: this season is blended '
+            'with last at n/(n+5), so five matches weigh as much as all of last season. Fixes the '
+            'blind spot where a club that has genuinely changed keeps a year-old rating. One '
+            'parameter away from v3-role-trust.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+        ),
+    ),
+    'v4-current-form': ProjectionMethod(
+        name='v4-current-form',
+        notes=(
+            '**The default from GW2 2026/27 on.** Both v4 levers together: the minutes blend ramps '
+            'toward the matches just played, and the club ratings blend this season with last. '
+            'Neither constant is fitted - a ramp cannot be fitted on one gameweek - so both are '
+            'stated judgements with v4-form-minutes and v4-form-strength as the single-lever '
+            'controls, and v3-role-trust as the do-nothing baseline. Identical to v3-role-trust '
+            'before GW1.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+        ),
+    ),
 }
 
 
-DEFAULT_METHOD = 'v3-role-trust'
+DEFAULT_METHOD = 'v4-current-form'
 
 
 def method(name: str) -> ProjectionMethod:

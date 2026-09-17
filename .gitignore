@@ -186,6 +186,13 @@ data/*/dumps/
 data/*/news/
 data/*/draft_managers/
 data/*/fpl_managers/
+# Which draft league is ours, and who owns whom in it. Fetched per season, and the ids in it
+# are re-issued every season, so it is machine state rather than something to commit.
+data/*/draft_league.json
+data/*/draft_league/
+# Which classic-FPL team is ours. Permanent rather than seasonal, but still a person's id, and
+# the picks it points at are already ignored above.
+data/fpl_entry.json
 data/*/bootstrap_*.json
 data/*/fixtures_*.json
 data/*/elements_*.json

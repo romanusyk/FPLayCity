@@ -121,9 +121,22 @@ def build_run(
       the stored board had none.
     """
     players = []
+    replacement_points = {
+        position.name: round(level.points, 2) for position, level in replacement.items()
+    }
     for projection in sorted(projections, key=lambda p: -p.points):
         row = projection.as_dict()
-        row['vorp'] = round(vorp_by_player[projection.player_id], 3)
+        # Derived from the *stored* points and the *stored* replacement level, not from the
+        # unrounded projection. The app recomputes VORP live from these same two rounded numbers,
+        # and a stored value carrying finer precision than the artifact can reproduce orders
+        # near-ties differently in the two places - Evanilson 3.678 against Calafiori 3.674, one
+        # pair swapped on 0.004 of float dust. A row without a position, or a position with no
+        # replacement level, falls back to the caller's value.
+        stored = replacement_points.get(row.get('position'))
+        row['vorp'] = (
+            round(row['points'] - stored, 3) if stored is not None
+            else round(vorp_by_player[projection.player_id], 3)
+        )
         players.append(row)
 
     return {

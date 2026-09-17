@@ -256,6 +256,96 @@ your next pick. Unlike VORP, both move on every pick.
 
 `next_best_drop`, `wait_costs` in `src/web/opportunity.py`.
 
+### Waiver, free agency, and locked players
+
+After the draft, the only players you can sign are the ones nobody in your league owns, and every
+signing is a **swap in the same position** — you name the player you are releasing. Two modes:
+
+- **Waivers.** Claims are submitted before a deadline and processed together, in **waiver order**
+  (lowest number first). Contested claims go to the manager higher in that order.
+- **Free agency.** Between waiver windows, whoever asks first gets the player.
+
+A player is **locked** when he was added to the game or dropped by another squad too recently; he
+shows as unowned but cannot be claimed until the next deadline. `element-status` on the draft API
+reports all three states — `a` available, `o` owned, `l` locked — and
+`src/fpl/loader/draft_league.py` treats anything it does not recognise as *not* claimable.
+
+### Waiver gain (squad value, not player value)
+
+What a claim is worth: your **squad's** points over a horizon after the swap, minus before it,
+picking the best legal eleven each gameweek (1 keeper, at least 3 defenders, at least 1 forward).
+
+This is a different question from VORP and usually a much smaller number. Signing the tenth-best
+midfielder in the game gains nothing if he would sit behind your other five, and the metric says so.
+Two consequences worth knowing:
+
+- The player it is best to **drop** is usually the one who never starts, not the one the signing
+  displaces.
+- A good signing can be worth more than the gap to the man he replaces, because the eleven reshapes
+  around him — three defenders and five midfielders instead of four and four.
+
+`waiver_board`, `SquadValuation` in `src/web/waivers.py`.
+
+### Current-form ramps
+
+Two weights that walk from last season toward this one as matches are played, because everything
+in the model was fitted on pre-season and pre-season stops being the freshest evidence:
+
+- **Minutes.** The pre-season role curve reaches the recent window in full by **five gameweeks**.
+  A nailed starter who has not started in five weeks is not a nailed starter.
+- **Club ratings.** This season's goals weigh equally with all of last season at **five matches**,
+  so a club that has genuinely changed gets priced in by autumn rather than next July.
+
+Both are inert before GW1, and **neither number is fitted** — one gameweek cannot fit a ramp. They
+are judgements with controls: `v4-form-minutes` and `v4-form-strength` change one each,
+`v3-role-trust` changes neither.
+
+`current_season_ramp` in `src/fpl/projection/minutes.py`, `TeamStrength` in
+`src/fpl/projection/strength.py`.
+
+### My squad (classic FPL)
+
+The fifteen your own FPL team held at the end of the last gameweek that has *started*. The FPL
+board tags them, filters to them, and values them: `1-11` were the eleven you submitted, `12-15`
+the bench in order, `C` and `V` the armbands as they were then.
+
+Two limits, both stated on the page rather than buried here. It is **never the upcoming
+gameweek**: FPL publishes a squad only after its deadline, so a transfer you have already made for
+next week is not in the API at all, let alone in this. And the squad's value is the best legal XI
+each gameweek with **no captain doubling and no auto-subs** - the worth of the fifteen, not a
+predicted score.
+
+`FplSquad` in `src/fpl/loader/fpl_squad.py`; the entry id lives in `data/fpl_entry.json`, never in
+source, because a hardcoded one turned out to be a stranger's team for eight months.
+
+### Owner scope
+
+Who a list is showing, on the waivers screen. **Available to me** is your fifteen plus the free
+agents — everyone you could field or sign this week. **Mine** is your squad alone, for picking an
+eleven. **All** adds your rivals' squads, which only a trade can reach. **Free agents** is the
+claim pool on its own.
+
+`owner_kind` in `src/web/waivers.py` is the underlying tag: `mine`, `rival`, `free`, `locked`.
+
+### Horizon
+
+How many gameweeks ahead a number looks. A run stores per-fixture points, so any horizon up to the
+run's length is a sum rather than a new projection — which is why the waivers and FPL screens can
+show 1, 3 and 5 gameweeks side by side for the price of one. Ten is the cap, because that is as far
+as the fixture-level projection goes.
+
+The same swap is scored at every horizon on purpose: a claim that wins the next gameweek and loses
+the next five is a decision, not a recommendation.
+
+One of the three **decides**: it ranks the table, and on the FPL board it also drives `per GW` and
+`pts/£`. The other two are there to show what that decision costs elsewhere. Both screens read the
+same three from the same parser, so a horizon means the same window everywhere; what does *not*
+follow the horizon is the FPL board's `Proj` column and its component columns, because a run stores
+points per fixture but components only as run totals.
+
+`parse_horizons`, `span_gameweeks`, `resolve_sort_horizon` and `horizon_totals` in
+`src/web/waivers.py`.
+
 ### Tier
 
 A group of players separated from the next group by a sharp drop in VORP. A tier break means the
@@ -275,5 +365,6 @@ run against what actually happened, per component, against a stated naive baseli
 ### Related Docs
 
 - How a projection is produced, component by component — `src/fpl/projection/README.md`
+- Where league ownership comes from, and why draft ids are season-scoped — `src/fpl/loader/README.md`
 - The app that reads runs, and its screens — `src/web/README.md`
 - Where FPL points actually come from, measured — `docs/prediction_roadmap.md`

@@ -31,8 +31,10 @@ either way:
 ./run.sh -m src.fpl.fetch [--baseline|--baseline-only]   # FPL snapshots + prior-season baseline
 ./run.sh -m src.fotmob.load [--team NAME] [--season S]   # FotMob lineups, friendlies and cups
 ./run.sh -m src.fpl.project [--game draft|fpl] [--method NAME]   # write a run artifact
+./run.sh -m src.fpl.league [--entry ID|--refresh|--show] # draft league: who owns whom
+./run.sh -m src.fpl.squad  [--entry ID|--refresh|--show] # classic FPL: our own fifteen
 ./run.sh -m src.web.serve                                # review app on 127.0.0.1:8000
-./refresh.sh [method]                                    # fetch -> fotmob -> project, in one go
+./refresh.sh [method]                                    # fetch -> fotmob -> ownership -> project
 ./run.sh -m src.fpl.main                                 # in-season predictions & evaluation
 ./run.sh -m pytest                                       # full suite (needs cached data)
 ```
@@ -172,6 +174,136 @@ contribution against a threshold. `E[floor(saves/3)]` is 0.66 at 3.0 saves, not 
 now stores `fpl_player_code`. Same class of bug as the team-id table that used to sit in
 `src/fotmob/rotation/fotmob_adapter.py`. If you write a literal id into source, you have written a time bomb.
 
+**Draft entry and league ids are re-issued every season, and they identify people.** This is
+the element-id trap with a worse failure mode. `DraftManager` in `src/fpl/loader/load.py` used to
+hardcode four of them; checked against the live API on 2026-08-26, entry 52242 - "mine" for all of
+2025/26 - now serves a stranger's 2026/27 team in a league we are not in. Nothing raised:
+`bootstrap()` would have filed his fifteen players as ours. That enum is gone. The ids now live in
+`data/<season>/draft_league.json`, written by `./run.sh -m src.fpl.league --entry <id>`;
+`_draft_entries()` is the only source of entry ids for manager picks and fetches nobody, loudly,
+when no league is connected; and `load_config` refuses a file whose season does not match.
+
+**A permanent id is a *stable* wrong answer, which is worse.** This file used to end the paragraph
+above with "classic-FPL entry ids are permanent, which is why `FplManager` may still hardcode one".
+Both halves were true and the conclusion was wrong. `FplManager.ME = 2486591` went into
+`src/fpl/loader/load.py` on 2025-12-25; checked against the live API on 2026-08-26 that entry is
+"Reddevil", managed by somebody who is not us, and every `PlayerPresences` row filed under
+`is_mine=True` for eight months described a stranger's squad. A seasonal id at least breaks every
+July. A permanent one never breaks, so nobody looks. The id now lives in `data/fpl_entry.json`,
+written by `./run.sh -m src.fpl.squad --entry <id>`, which fetches the entry and prints the team and
+manager name *before* saving - a mistyped digit shows up as a stranger's name in the terminal rather
+than as fifteen wrong players on a board. `src/fpl/loader/fpl_squad.py` is the only reader, and it
+refuses to guess. The rule is not "seasonal ids go in config, permanent ids may be hardcoded"; it is
+**an id that names a person goes in config, and whatever writes it asks the API who that is**.
+
+**A classic-FPL squad is always one gameweek behind, and that is the API, not a gap.** FPL
+publishes an entry's picks only *after* the gameweek deadline, so before the GW2 deadline
+`entry/{id}/event/2/picks/` is a 404 and the freshest squad in existence is GW1's. Any transfer
+already made for the upcoming week is unreadable. `FplSquad` therefore carries the gameweek it
+describes, and the FPL board prints it next to the filter, because "my squad" silently meaning last
+week's fifteen is a decision made on the wrong fifteen.
+
+**Evidence expires, and two weights now ramp because of it.** Everything fitted in this repo was
+fitted on *pre-season*: the role curve says a nailed starter's absence from friendlies is rest, and
+club ratings come from last season's results because August bootstrap strength fields are zero.
+Both statements stop being true once matches are played, and neither used to notice. From
+`v4-current-form` on: `current_season_ramp` walks the minutes blend from the fitted curve to 1.0
+over five gameweeks, and `TeamStrength(current_prior_matches=5.0)` weighs this season equally with
+last at five matches. **Neither constant is fitted** - one gameweek cannot fit a ramp - so both are
+judgements, `v4-form-minutes` and `v4-form-strength` isolate one lever each, and `v3-role-trust`
+stays as the do-nothing baseline. Both are inert before GW1 by construction, so no pre-season
+comparison changed meaning. One trap inside the trap: a promoted club's rating is the bottom-three
+*placeholder multiplier*, already shrunk, so blending it in rate space and shrinking again drags
+every promoted club to the league average the moment they kick a ball. Promoted clubs blend in
+multiplier space instead.
+
+**Last season's per-match rows stop at GW30.** The 2025/26 snapshots were captured 2026-03-17, and
+`element-summary/{id}/history` only ever returns the *current* season, so GW31-38 of 2025/26 are
+gone and not recoverable from the FPL API. Season *totals* are complete - they came from
+`history_past` before GW1 - so `prior_start_share` (`starts / 38`) and every per-90 rate are whole.
+What is short is the per-match evidence: DC hit rates, minutes per start, and the game log in the
+app. Anything that counts matches from `PlayerHistory` and assumes 38 is wrong by eight.
+
+**Once a gameweek is played, the role-evidence window moves - and the fitted constants do not
+know it.** `build_preseason_roles` reads every stored match before the projection's first
+gameweek, so a GW2-11 run counts GW1's real line-ups at 1.0 against a friendly's 0.20. That is the
+designed mechanism (it is what put Raya above Kepa off one Community Shield) applied to better
+evidence, and the direction is clearly right - but `PRESEASON_ROLE_KNOTS` was fitted where
+"pre-season" meant friendlies. Measured on 2026-08-26, including GW1 moves the board a mean 43
+places. `role_evidence_before_gameweek` makes the window explicit and
+`v3-role-preseason-only` is the control that pins it back to the GW1 deadline. Nothing here is
+settled until GW1-5 outcomes can score the pair.
+
+**A horizon that starts at GW1 is three bugs wearing one coat, and it was the shipped default for
+three weeks.** `ProjectionParams` carried `gameweek_from=1`, which was right in pre-season and
+silently wrong from GW2 on. Every `./refresh.sh` after GW1 wrote a GW1-10 run that (a) summed
+gameweeks already played, so the waivers page - which counts its horizons *forward from*
+`run['gameweek_from']` - scored "the next 5 gameweeks" as GW1-5, (b) reported
+`played_gameweeks = gameweek_from - 1 = 0`, so the `current_season_ramp` that `v4-current-form`
+exists for never engaged, and (c) fell back to `gameweek_from` for the role-evidence window, so the
+real line-ups from the trap above were thrown away. Nothing raised: the artifact was valid, the
+method name was right, and only the range gave it away. Fixed in `_with_horizon`
+(`src/fpl/project.py`), which defaults the start to `resolve_next_gameweek()` and the end to a full
+horizon from it, clamped to `MAX_GAMEWEEK` in `src/fpl/loader/utils.py`. Inert before GW1, so no
+stored pre-season comparison changed meaning. The general lesson is the element-id one in a new
+place: **a default that encodes "the season has not started" is a time bomb with a fuse of one
+gameweek.**
+
+**The prior-season baseline can only be *built* before the first kickoff, and must be *topped up*
+after.** Until GW1, `bootstrap-static` carries last season's totals and can be reconciled against
+`history_past`; from GW1 on it carries this season's, and the reconciliation fails on every player
+who has played - Raya reads as "90 minutes, 1 start" against last season's 3,330. `bootstrap()`
+therefore prefers the captured snapshot, and tops it up from `history_past` for anyone registered
+since (8 players by 2026-08-26, including Wan-Bissaka and his 2,080-minute season, who would
+otherwise have been projected as having no Premier League record at all). Snapshot-only would be
+the Jaidon Anthony bug wearing a different hat.
+
+**A waiver is not a draft pick, and pricing it like one is wrong by a lot.** The draft board asks
+what a player is worth; a waiver asks what he adds to *your fifteen*, which the game restricts to a
+same-position swap. `src/web/waivers.py` re-picks the best legal XI for every gameweek in the
+horizon before and after the swap, and the difference is the metric. Two consequences that surprise
+people: upgrading a bench player is worth about zero, and the best player to drop is usually the one
+who never starts rather than the one being displaced - signing a strong midfielder can be worth
+three times the gap to the man he replaces, because the XI reshapes around him (three defenders,
+five midfielders). Anything that scores a swap as `new points - old points` has skipped the only
+part that matters.
+
+**The classic-FPL transfer is the same metric with three constraints bolted on, and the third one
+decides most rows.** `src/web/transfers.py` reuses `SquadValuation` rather than restating the swap
+arithmetic, then narrows it: the incoming player must fit `bank + selling price of the man you
+sell`, no more than three players may come from one club (checked against the squad *after* the
+sale, so a fourth City player is legal when the third is the one leaving), and every transfer past
+your free allowance costs 4 points. Measured on 2026-09-11 against a £0.0 bank, 640 unowned players
+produced 608 priceable swaps, 31 improvements, and a best row worth **+2.1 over three gameweeks** -
+comfortably less than a hit. A screen that reported `gain` alone would have recommended a transfer
+every week of the season. Two approximations are unavoidable and are printed on the page rather
+than hidden: the squad is last gameweek's (FPL publishes picks only after a deadline) and selling
+prices are approximated by current prices (the public API never publishes what you paid), which
+makes every budget an upper bound. `FplSquad.bank` is `None` when a payload carries no
+`entry_history`, and **must not be read as £0.0** - zero is itself a budget, and the tightest one,
+so the guess would silently rule out every upgrade while looking like an answer.
+
+**The news pipeline's LLM step has no API key and must not be run inside this repo.** Extraction
+moved from a Gemini SDK client to `claude -p` (`src/fpl/client/claude_cli.py`), which is already
+authenticated, so there is no `GEMINI_API_KEY` to rotate. Two things bit immediately. First,
+`claude -p` started in this directory reads `CLAUDE.md` and acts on it: the first trial **refused to
+extract**, correctly citing the no-fabrication rule above. Every call now runs in an empty temp
+directory with tools disabled, so the article is the only source. Second, the CLI has no
+server-side JSON-schema mode, so `RESPONSE_SCHEMA` is stated in the prompt and the reply is
+re-checked for required keys - never trusted. The layer it writes is `extracted`, not `gemini`; the
+old name is still read so stored seasons stay usable, and never written.
+
+**An extracted fact is rejected per-fact, not per-run, and the rate is the alarm.** Validation
+checks the LLM's player id against the game's own list. On the first live run it caught one real
+mis-mapping (Murillo's fact filed under 473, which is Aina) and one false alarm (`Odegaard` vs
+`Ødegaard`). The false alarm is why `comparable_name` in `src/fpl/loader/news/validate.py` forgives
+transliteration - NFKD plus an explicit table, because `ø` is a single character that stripping
+combining marks does not touch - while still failing on a different name. The real mis-mapping is
+why a rejection no longer raises: it used to abort the gameweek and leave the news layer empty, so
+now each bad fact is dropped, counted and logged, and the run fails only above `MAX_REJECT_RATE`
+(25%), which means something systemic like a bootstrap from the wrong season. GW5 2026/27: 184 facts
+kept, 1 rejected.
+
 **Name matching needs a floor, and a higher one across clubs.** Three academy players called Josh
 tie with each other on a shared first name, and "George King" ties Tom King with Josh King league
 wide. `MIN_MATCH_SCORE` and `MIN_GLOBAL_MATCH_SCORE` in `src/fotmob/rotation/fotmob_adapter.py`
@@ -196,12 +328,17 @@ the shrinkage decisions.
 - FPL fetch/populate: `src/fpl/loader/load.py`; converters in `src/fpl/loader/convert/`.
   `load_from_snapshots()` is the offline path used by the projector and the app.
 - Prior-season baseline: `src/fpl/loader/baseline.py`.
+- Shared HTTP for both games: `src/fpl/loader/http.py`.
+- Draft league ownership: `src/fpl/loader/draft_league.py`, CLI `src/fpl/league.py`. Config and
+  snapshots under `data/<season>/draft_league*`, never committed.
+- Our classic-FPL team: `src/fpl/loader/fpl_squad.py`, CLI `src/fpl/squad.py`. Entry id in
+  `data/fpl_entry.json` (not season-scoped), picks under `data/<season>/fpl_managers/`.
 - Collections and the `Query` facade: `src/fpl/models/immutable.py`.
 - FotMob capture and parsing: `src/fotmob/load.py`; club rosters per season in
   `src/fotmob/models/fotmob_metadata.py`.
 - Rotation analysis: `src/fpl/models/rotation.py` plus `src/fotmob/rotation/`.
 - Horizon projection, run artifacts, VORP: `src/fpl/projection/` (see its `README.md`).
-- Review app: `src/web/` (see its `README.md`).
+- Review app: `src/web/` (see its `README.md`). In-season waiver valuation: `src/web/waivers.py`.
 
 ## Adding a new season
 

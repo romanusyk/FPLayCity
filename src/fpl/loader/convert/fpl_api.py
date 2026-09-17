@@ -271,6 +271,52 @@ def prior_season_to_player_season(
     )
 
 
+def prior_season_from_history(
+    element_row: dict,
+    history_past_rows: list[dict],
+    season: str,
+    fpl_season_name: str,
+    team: str,
+    prior_team: str | None,
+) -> PlayerSeason | None:
+    """Build a prior-season row from `history_past` alone, with no bootstrap cross-check.
+
+    `prior_season_to_player_season` is the pre-season path and reconciles two sources. This is the
+    in-season path, for a player who was not in the game when the baseline was captured: bootstrap
+    now carries *this* season's totals, so there is nothing to compare against, and comparing
+    anyway raises on every player who has kicked a ball.
+
+    `history_past` does not rot - it is the same aggregated row all season - so the totals are as
+    good as the pre-season ones. What is lost is the cross-check, and that is recorded as
+    `PriorSeasonSource.HISTORY_PAST_ONLY` rather than hidden.
+
+    Returns:
+    - A `PlayerSeason`, or None when the player has no Premier League record for that season.
+
+    Raises:
+    - ValueError: on more than one aggregated row for the season, same as the pre-season path.
+    """
+    season_rows = [row for row in history_past_rows if row["season_name"] == fpl_season_name]
+    if len(season_rows) > 1:
+        raise ValueError(
+            f"Player {element_row['id']} ({element_row['web_name']}) has {len(season_rows)} "
+            f"'{fpl_season_name}' rows in history_past. Expected at most one aggregated row."
+        )
+    if not season_rows:
+        return None
+    history_row = season_rows[0]
+    return PlayerSeason(
+        player_id=element_row["id"],
+        season=season,
+        source=PriorSeasonSource.HISTORY_PAST_ONLY,
+        team_id=element_row["team"],
+        team=team,
+        prior_team=prior_team,
+        **{field: history_row[field] for field in PRIOR_SEASON_TOTALS},
+        **{field: float(history_row[field]) for field in PRIOR_SEASON_EXPECTED},
+    )
+
+
 def player_season_to_json(player_season: PlayerSeason) -> dict:
     """Convert a PlayerSeason dataclass into a persistable JSON dict."""
     payload = {

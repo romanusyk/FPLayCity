@@ -41,6 +41,8 @@ select, input, button.act {
 }
 button.act { cursor: pointer; }
 button.act:hover { border-color: var(--accent); }
+button.act.on { background: var(--chip); border-color: var(--accent); }
+.modes { display: flex; gap: 4px; }
 .spacer { flex: 1; }
 .muted { color: var(--muted); }
 main { padding: 14px; }
@@ -108,6 +110,11 @@ section.block > h3 {
   font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
   color: var(--muted); margin: 0 0 6px; font-weight: 600;
 }
+table.gamelog { margin-top: 8px; font-variant-numeric: tabular-nums; }
+table.gamelog th, table.gamelog td { padding: 3px 6px; }
+table.gamelog th:nth-child(-n+2), table.gamelog td:nth-child(-n+2) { text-align: left; }
+table.gamelog tr.extra { display: none; }
+table.gamelog.showall tr.extra { display: table-row; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }
@@ -144,7 +151,17 @@ textarea {
 const S = {
   view: 'draft', config: null, runs: [], runId: null,
   board: null, sort: null, desc: true, gameFor: 'draft', cmpA: null, cmpB: null,
-  filters: { pos: '', team: '', q: '', hideTaken: false, live: true, picks: null },
+  filters: { pos: '', team: '', q: '', hideTaken: false, live: true, picks: null, squad: 'all' },
+  // One set of horizons for the whole app. Changing them on the FPL board changes them on the
+  // waivers page too, on purpose: they are the same three questions about the same weeks.
+  horizons: [1, 3, 5], sortHorizon: 3,
+  waivers: { includeLocked: false, onlyGains: false,
+             board: null, pos: '', q: '', sort: 'rank', desc: true,
+             mode: 'claims', scope: 'available', psort: 'points', pdesc: true },
+  // The classic-FPL side of the same question. `freeTransfers` is not published by the API, so
+  // it is the manager's to state; it moves `net` and never `gain`.
+  transfers: { board: null, pos: '', q: '', sort: 'rank', desc: true,
+               freeTransfers: 1, onlyWorthHit: false },
 };
 
 const api = async (path) => {
@@ -190,10 +207,13 @@ const HELP = {
   vorp: ['VORP', 'Value Over Replacement Player: projected points minus the points of the best player in the same position who will STILL be free at the end of the draft. It is how you compare a forward with a midfielder, because scarcity differs by position. It is deliberately stable: taking a star removes one player from the pool and one pick from those still to come, so the last man standing — and therefore VORP — does not move. Use Δnext for what a single pick costs you.'],
   drop_next: ['Δnext', 'Points this player has over the NEXT available player in his position. This is the cost of not taking him: a big number means the position falls off a cliff below him, a small number means someone almost as good is still there. Live draft mode only, and it rises as the players below him are taken.'],
   wait_cost: ['Cost of waiting', 'What each position costs you if you spend this pick elsewhere: the best player available now, minus the best one still there when your turn comes round again. It assumes the picks in between go to the highest VORP on the board, so it is a floor — if your rivals reach for favourites, your target is more likely to survive, not less.'],
-  points: ['Proj', 'Total points we expect over the gameweek range shown at the top of the page. It is the sum of all the parts below.'],
+  points: ['Proj', 'Total points we expect over the whole gameweek range of the run, shown at the top of the page. It is the sum of all the component columns, and it does not follow the horizon you are deciding on.'],
   points_per_gameweek: ['per GW', 'Projected points divided by the number of matches in the range. Useful when clubs play a different number of games.'],
+  horizon_points: ['Horizon points', 'Projected points over the first N gameweeks of the run, added up fixture by fixture — a double gameweek counts twice, a blank counts as zero. Click the column to rank the whole board on it.'],
+  horizon_per_gameweek: ['per GW at the horizon', 'Points at the deciding horizon divided by the number of gameweeks in it, so a blank drags the average down. It answers "what does he score in a normal week", which the run total cannot.'],
+  horizon_per_million: ['pts/£ at the horizon', 'Points at the deciding horizon divided by price: value for money over the weeks you are deciding on, not over the whole run. A cheap player with a good next three fixtures shows up here and nowhere else.'],
   price: ['£', 'Current FPL price, in millions. Only matters in classic FPL — in a draft nothing costs money.'],
-  points_per_million: ['pts/£', 'Projected points divided by price: value for money.'],
+  points_per_million: ['pts/£ over the run', 'Projected points divided by price: value for money over the run\'s whole range. The FPL board shows the horizon version of this instead, because the weeks you are deciding on are rarely all ten.'],
   ownership: ['Own%', 'Share of FPL managers who own this player. A low number with high points is a differential.'],
 
   /* points components */
@@ -227,6 +247,36 @@ const HELP = {
   replacement: ['Replacement level', 'The points you can get at this position for free. With 4 managers each starting 1 GKP, 4 DEF, 4 MID and 2 FWD, it is the best player still left once every starting slot is filled. VORP is measured against this line, and it rises as players are drafted.'],
   tier: ['Tier', 'Players are grouped where VORP drops sharply. A blue line means the next player is clearly worse — pick now, or accept the drop.'],
   live: ['Live draft mode', 'Recalculates replacement level and VORP against the players still available, so the board reacts as picks come off the table. Only VORP, # and tier move — Proj and the component columns come from the saved run and never change. Marking a player "mine" or "other" has the same effect on the numbers: both mean he is gone. With this off, nothing recalculates.'],
+
+  /* one match at a time */
+  match_xg: ['xG', 'Expected goals from the chances he had in that match. 0.5 means the chances were worth half a goal — better evidence of how he played than whether the ball went in.'],
+  match_xa: ['xA', 'Expected assists: the chances he created, valued by how likely each was to be scored.'],
+  match_xgc: ['xGC', 'Expected goals conceded by his club while he was on the pitch. High xGC with a clean sheet means the defence was lucky, not solid.'],
+
+  /* my classic-FPL squad */
+  my_squad: ['My squad', 'The fifteen players your classic-FPL team held at the end of the last gameweek that has started. FPL publishes a squad only after its deadline, so this is never the upcoming week: any transfer you have already made for the next gameweek is not in it, and cannot be — the API does not expose it.'],
+  squad_scope: ['Show', 'Which players the board lists. All players is everyone; my squad is your fifteen, for deciding who to drop; not my squad is everyone else, which is your transfer market.'],
+  squad_slot: ['Slot', 'Where the player sat in your last submitted team: 1–11 started, 12–15 were on the bench in that order. C is the captain and V the vice — both from last gameweek, not a recommendation.'],
+  fpl_squad_points: ['Squad value', 'What your fifteen would score over the horizon, picking the best legal eleven each gameweek — 1 keeper, at least 3 defenders, at least 1 forward. It does not double a captain (who you will captain in three weeks is not knowable, and the armband on file is last gameweek\'s) and does not model auto-subs, so it is the value of the squad rather than a predicted score.'],
+
+  /* waivers */
+  horizon: ['Horizon', 'How many gameweeks ahead a number looks. A 3-gameweek horizon adds up the next three matches only. The projection reaches 10 gameweeks, so that is the longest you can ask for.'],
+  squad_points: ['Squad points', 'What your current fifteen would score over the horizon, picking the best legal eleven each gameweek — 1 keeper, at least 3 defenders, at least 1 forward. Every gain on this page is measured against this number.'],
+  waiver_gain: ['Gain', 'Extra points your whole squad would score over the horizon if you signed this player and dropped the one shown next to him. It is not his points — it is the difference he makes to your best eleven, gameweek by gameweek. Signing a great player who would sit on your bench gains almost nothing, and that shows up here as a number near zero.'],
+  waiver_out: ['Drop', 'The player of yours it is best to release for him. Always the same position — the game only lets you swap an unsigned player for one of yours in the same position — and always the one that gains most at the horizon you are deciding on, so the other horizons score that same pair rather than their own best pair.'],
+  starts: ['Starts', 'How many of the horizon\'s gameweeks this player of yours would make your best eleven. 0 means he is bench cover, so upgrading him is worth more than his points suggest.'],
+  blanks: ['Blank', 'Gameweeks in the horizon where his club does not play. Those weeks he scores nothing and your bench covers him.'],
+  transfer_gain: ['Gain', 'Extra points your whole fifteen would score over the horizon if you signed this player and sold the one shown next to him, picking the best legal eleven each week. It is not the difference between the two players: signing someone who would sit on your bench gains almost nothing, and a good signing can be worth more than the gap to the man he replaces because the eleven reshapes around him.'],
+  transfer_net: ['Net', 'Gain minus the points a hit costs. One transfer is free if you have a free transfer in hand, so net equals gain; beyond that the game charges 4 points each. This is the number to decide on — most transfers found here are worth less than a hit.'],
+  transfer_out: ['Sell', 'The player of yours it is best to sell for him. Always the same position, because a classic squad must stay 2 keepers, 5 defenders, 5 midfielders and 3 forwards — and always the pair that gains most at the horizon you are deciding on.'],
+  transfer_budget: ['Budget', 'What you can spend on the incoming player: the money in the bank plus the selling price of the one you drop. Selling prices here are approximated by current prices, because the public API does not publish what you paid — a player who has risen sells for less than he costs, so this is an upper bound.'],
+  transfer_spare: ['Spare', 'Money left over after the swap, on the same approximation as the budget.'],
+  free_transfers: ['Free transfers', 'How many transfers cost you nothing this week. FPL does not publish this, so it is yours to set — it changes net, never gain.'],
+  claimable: ['Claimable', 'Whether you can actually sign him now. Free agent — nobody owns him. Locked — he was added to the game or dropped by another squad too recently, so he cannot be claimed until the next deadline.'],
+  waiver_pick: ['Waiver order', 'Your priority when two managers claim the same player. Lower is better, and it is not modelled here: every suggestion assumes your claim goes through.'],
+  ownership_label: ['Owner', 'Which squad in your league holds this player. Only free agents can be claimed; anyone owned needs a trade.'],
+  player_list: ['All players', 'The plain board: every projected player with his points at each horizon, ranked by the horizon you are deciding on. No swap arithmetic — use it to pick your eleven, or to see who is out there before trusting the claims list.'],
+  owner_scope: ['Who to show', 'Available to me — your own players plus the free agents, which is everyone you could field or sign. Mine — your fifteen only, for picking a team. All — including your rivals\' squads, which you can only reach through a trade. Free agents — the claim pool on its own.'],
 
   /* runs and scoring */
   run: ['Run', 'One saved projection. Runs are never changed after they are written, so you can always compare two of them and see exactly what a model change moved.'],
@@ -262,7 +312,8 @@ const hint = (key, label) => {
 };
 
 const VIEWS = [
-  ['draft', 'Draft board'], ['fpl', 'FPL board'],
+  ['draft', 'Draft board'], ['waivers', 'Waivers'], ['fpl', 'FPL board'],
+  ['transfers', 'Transfers'],
   ['compare', 'Compare runs'], ['calibration', 'Calibration'], ['feedback', 'Feedback'],
   ['glossary', 'Glossary'],
 ];
@@ -278,7 +329,13 @@ function renderNav() {
 function go(view) { S.view = view; location.hash = '#/' + view; render(); }
 
 function isBoard() { return S.view === 'draft' || S.view === 'fpl'; }
-function game() { return isBoard() ? S.view : S.gameFor; }
+function game() {
+  if (isBoard()) return S.view;
+  // Transfers are a classic-FPL question by definition; waivers a draft one. Only the shared
+  // screens (compare, calibration, feedback) follow the gameFor selector.
+  if (S.view === 'transfers') return 'fpl';
+  return S.gameFor;
+}
 
 async function loadRuns() {
   const g = game();
@@ -287,7 +344,13 @@ async function loadRuns() {
   sel.innerHTML = S.runs.map((r) =>
     `<option value="${r.run_id}">${esc(r.method)} · ${esc(r.created_at.slice(5, 16).replace('T', ' '))}${r.label ? ' · ' + esc(r.label) : ''}</option>`
   ).join('') || '<option value="">no runs</option>';
-  if (!S.runs.find((r) => r.run_id === S.runId)) S.runId = S.runs.length ? S.runs[0].run_id : null;
+  if (!S.runs.find((r) => r.run_id === S.runId)) {
+    // Newest run of the default method, falling back to the newest of anything. Otherwise
+    // generating a control makes the control the default board, which is the one view nobody
+    // should be making decisions from.
+    const preferred = S.runs.find((r) => r.method === S.config.default_method);
+    S.runId = (preferred || S.runs[0] || {}).run_id || null;
+  }
   sel.value = S.runId || '';
   sel.onchange = () => { S.runId = sel.value; render(); };
 }
@@ -299,6 +362,8 @@ async function render() {
   main.innerHTML = '<p class="muted">loading…</p>';
   try {
     if (isBoard()) await renderBoard(main);
+    else if (S.view === 'waivers') await renderWaivers(main);
+    else if (S.view === 'transfers') await renderTransfers(main);
     else if (S.view === 'compare') await renderCompare(main);
     else if (S.view === 'calibration') await renderCalibration(main);
     else if (S.view === 'glossary') renderGlossary(main);
@@ -306,6 +371,61 @@ async function render() {
   } catch (err) {
     main.innerHTML = `<div class="notice err"><b>${esc(err.message)}</b></div>`;
   }
+}
+
+/* ------------------------------------------------------------- horizons */
+
+/* Three horizons, one deciding horizon, shared by the boards and the waivers page. The inputs
+   are capped at the selected run's length as well as at HORIZON_LIMIT, because a horizon the run
+   has no fixtures for is a 400, not a longer view. */
+
+function runLength() {
+  const run = S.runs.find((r) => r.run_id === S.runId);
+  return run ? run.gameweek_to - run.gameweek_from + 1 : S.config.waivers.horizon_limit;
+}
+
+/** The horizons we can actually ask this run for, in order. */
+function horizons() {
+  const cap = Math.min(S.config.waivers.horizon_limit, runLength());
+  const wanted = [...new Set(S.horizons.map((h) => Math.min(Math.max(1, h), cap)))].sort((a, b) => a - b);
+  return wanted;
+}
+
+function decidingHorizon() {
+  const list = horizons();
+  return list.includes(S.sortHorizon) ? S.sortHorizon : list[Math.floor(list.length / 2)];
+}
+
+function horizonInputs() {
+  const cap = Math.min(S.config.waivers.horizon_limit, runLength());
+  return S.horizons.map((h, i) =>
+    `<input class="wh" data-i="${i}" type="number" min="1" max="${cap}"
+      value="${h}" style="width:52px" title="Gameweeks this column adds up, counted from the start of the run. At most ${cap} for this run.">`).join(' ');
+}
+
+function horizonOptions() {
+  return horizons().map((h) =>
+    `<option value="${h}" ${h === decidingHorizon() ? 'selected' : ''}>${h} GW</option>`).join('');
+}
+
+/** The label, the three boxes and the "decide on" select, as one span. */
+function horizonFields() {
+  return `<span class="muted">${hint('horizon', 'horizons')}</span> ${horizonInputs()}
+    <span class="muted">decide on</span> <select class="hsort">${horizonOptions()}</select>`;
+}
+
+function wireHorizons(bar) {
+  bar.querySelectorAll('.wh').forEach((input) => {
+    input.onchange = (e) => {
+      const next = S.horizons.slice();
+      next[Number(e.target.dataset.i)] = Math.max(1, Number(e.target.value) || 1);
+      S.horizons = next;
+      if (!horizons().includes(S.sortHorizon)) S.sortHorizon = decidingHorizon();
+      render();
+    };
+  });
+  const sort = bar.querySelector('.hsort');
+  if (sort) sort.onchange = (e) => { S.sortHorizon = Number(e.target.value); render(); };
 }
 
 /* ---------------------------------------------------------------- boards */
@@ -317,16 +437,34 @@ const DRAFT_COLS = [
   ['clean_sheets', 'CS'], ['defensive_contribution', 'DC'], ['bonus', 'Bonus'],
   ['p_start', 'Start%'], ['dc_hit_rate', 'DC hit'], ['dc_sample', 'n'],
 ];
-const FPL_COLS = [
-  ['rank', '#'], ['web_name', 'Player'], ['team', 'Club'], ['position', 'Pos'],
-  ['points', 'Proj'], ['points_per_gameweek', 'per GW'], ['price', '£'],
-  ['points_per_million', 'pts/£'], ['ownership', 'Own%'],
-  ['appearance', 'Appear'], ['goals', 'Goals'], ['assists', 'Assists'],
-  ['clean_sheets', 'CS'], ['defensive_contribution', 'DC'], ['bonus', 'Bonus'],
-  ['p_start', 'Start%'], ['dc_hit_rate', 'DC hit'], ['dc_sample', 'n'],
-];
+/* Classic FPL, with a horizon column per requested horizon. `per GW` and `pts/£` follow the
+   deciding horizon; `Proj` and every component column are totals over the whole run, because the
+   artifact stores points per fixture but components only in total. */
+function fplCols() {
+  const cols = [['rank', '#'], ['web_name', 'Player'], ['team', 'Club'], ['position', 'Pos']];
+  (S.board ? S.board.horizons : horizons()).forEach(
+    (h) => cols.push([`points${h}`, `${h} GW`, 'horizon_points']));
+  cols.push(
+    ['per_gameweek', 'per GW', 'horizon_per_gameweek'], ['price', '£'],
+    ['per_million', 'pts/£', 'horizon_per_million'], ['ownership', 'Own%'],
+    ['p_start', 'Start%'], ['points', 'Proj'],
+    ['appearance', 'Appear'], ['goals', 'Goals'], ['assists', 'Assists'],
+    ['clean_sheets', 'CS'], ['defensive_contribution', 'DC'], ['bonus', 'Bonus'],
+    ['dc_hit_rate', 'DC hit'], ['dc_sample', 'n'],
+  );
+  return cols;
+}
+
+function boardCols() { return S.view === 'draft' ? DRAFT_COLS : fplCols(); }
+
+/** Which horizon a `points3`-style column key means, or null for every other column. */
+const horizonOf = (key) => (/^points\d+$/.test(key) ? Number(key.slice(6)) : null);
 
 const cellValue = (row, key) => {
+  const horizon = horizonOf(key);
+  if (horizon) return row.horizon_points ? row.horizon_points[horizon] : null;
+  if (key === 'per_gameweek') return row.horizon_per_gameweek[S.board.sort_horizon];
+  if (key === 'per_million') return row.horizon_per_million[S.board.sort_horizon];
   if (key in row) return row[key];
   if (row.components && key in row.components) return row.components[key];
   if (key === 'p_start') return row.p_start;
@@ -342,10 +480,18 @@ async function renderBoard(main) {
   const live = S.view === 'draft' && S.filters.live;
   const picks = S.filters.picks == null ? '' : `&picks_until_next_turn=${S.filters.picks}`;
   S.board = await api(
-    `/board?game=${S.view}&run_id=${encodeURIComponent(S.runId)}&live=${live}${picks}`);
+    `/board?game=${S.view}&run_id=${encodeURIComponent(S.runId)}&live=${live}${picks}`
+    + `&horizons=${horizons().join(',')}&sort_horizon=${decidingHorizon()}`);
   const head = S.board.run;
-  const cols = S.view === 'draft' ? DRAFT_COLS : FPL_COLS;
-  if (!S.sort) S.sort = S.view === 'draft' ? 'vorp' : 'points';
+  const cols = boardCols();
+  // Rank on an FPL board is the deciding horizon's rank, so leave the sort on it: sorting by the
+  // run total while the numbers next to it cover three gameweeks is how you misread a board. A
+  // sort carried over from the other board (VORP, say) is dropped rather than applied invisibly to
+  // a table that has no such column.
+  if (!S.sort || !cols.some(([key]) => key === S.sort)) {
+    S.sort = S.view === 'draft' ? 'vorp' : 'rank';
+    S.desc = true;
+  }
 
   main.innerHTML = '';
   main.append(el(`<div class="notice" style="border-left-color:var(--accent)">
@@ -358,29 +504,97 @@ async function renderBoard(main) {
   if (S.view === 'draft') {
     if (S.board.waiting) main.append(waitingCards());
     main.append(replacementCards());
-  } else main.append(fplCards());
+  } else {
+    main.append(horizonNote());
+    const note = squadNote();
+    if (note) main.append(note);
+    main.append(fplCards());
+  }
   main.append(filterBar());
   main.append(boardTable(cols));
 }
 
+/* What the horizon columns cover, and what they deliberately do not. */
+function horizonNote() {
+  const b = S.board;
+  const last = b.gameweeks[b.sort_horizon - 1];
+  const window = b.sort_horizon === 1 ? `GW${b.gameweeks[0]}` : `GW${b.gameweeks[0]}–${last}`;
+  const stale = b.gameweeks[0] !== S.config.next_gameweek;
+  return el(`<div class="notice"${stale ? ' style="border-left-color:var(--warn)"' : ''}>
+    Deciding on <b>${b.sort_horizon} GW</b> (${window}), counted from the start of the run.
+    Click another horizon column to decide on it.
+    ${stale ? `<b>This run starts at GW${b.gameweeks[0]}, but the next gameweek is
+      GW${S.config.next_gameweek}</b>, so "1 GW" means GW${b.gameweeks[0]}. Generate a run from the
+      right gameweek: <code>./run.sh -m src.fpl.project --game fpl --gw-from
+      ${S.config.next_gameweek} --gw-to ${S.config.next_gameweek + 9}</code>` : ''}
+    <span class="muted">Proj and every component column (Appear to Bonus) are totals over the whole
+      run, GW${b.run.gameweek_from}–${b.run.gameweek_to} — the run stores points per fixture but
+      components only in total, so they are not sliced to the horizon.</span></div>`);
+}
+
 function fplCards() {
   const rows = S.board.players;
-  const best = (key) => rows.slice().sort((a, b) => b[key] - a[key])[0];
-  const value = best('points_per_million');
-  const differential = rows.filter((r) => r.ownership < 5).sort((a, b) => b.points - a.points)[0];
+  const h = S.board.sort_horizon;
+  const at = (row) => row.horizon_points[h];
+  const value = rows.slice().sort((a, b) => b.horizon_per_million[h] - a.horizon_per_million[h])[0];
+  const differential = rows.filter((r) => r.ownership < 5).sort((a, b) => at(b) - at(a))[0];
+  const top = rows.slice().sort((a, b) => at(b) - at(a))[0];
   const wrap = el('<div class="cards"></div>');
-  wrap.append(el(`<div class="card"><div class="k">${hint('points_per_million', 'Best value')}</div>
+  wrap.append(el(`<div class="card"><div class="k">${hint('horizon_per_million', 'Best value')}</div>
     <div class="v">${esc(value.web_name)}</div>
-    <div class="s">${n2(value.points_per_million)} pts per £m · £${n1(value.price)}</div></div>`));
+    <div class="s">${n2(value.horizon_per_million[h])} pts per £m · £${n1(value.price)}
+      · over ${h} GW</div></div>`));
+  wrap.append(el(`<div class="card"><div class="k">${hint('horizon_points', 'Top projected')}</div>
+    <div class="v">${esc(top.web_name)}</div>
+    <div class="s">${n1(at(top))} pts over ${h} GW · £${n1(top.price)}</div></div>`));
   if (differential) {
-    wrap.append(el(`<div class="card"><div class="k"><span class="hint" title="The highest projected player owned by fewer than 5% of managers. If he scores, you gain on almost everyone.">Top differential</span></div>
+    wrap.append(el(`<div class="card"><div class="k"><span class="hint" title="The highest projected player owned by fewer than 5% of managers, over the horizon you are deciding on. If he scores, you gain on almost everyone.">Top differential</span></div>
       <div class="v">${esc(differential.web_name)}</div>
-      <div class="s">${n1(differential.points)} pts · ${n1(differential.ownership)}% owned</div></div>`));
+      <div class="s">${n1(at(differential))} pts over ${h} GW · ${n1(differential.ownership)}% owned</div></div>`));
   }
   wrap.append(el(`<div class="card"><div class="k">Players</div>
     <div class="v">${rows.length}</div>
-    <div class="s">GW${S.board.run.gameweek_from}–${S.board.run.gameweek_to}</div></div>`));
+    <div class="s">run GW${S.board.run.gameweek_from}–${S.board.run.gameweek_to}</div></div>`));
+  const squad = squadCard();
+  if (squad) wrap.prepend(squad);
   return wrap;
+}
+
+/* Our own fifteen: what they are worth over the deciding horizon, and which gameweek they are. */
+function squadCard() {
+  const sq = S.board.squad;
+  if (!sq) return null;
+  const h = S.board.sort_horizon;
+  const value = sq.points ? n1(sq.points[h]) : '–';
+  const missing = sq.missing.length
+    ? ` · ${sq.missing.length} not projected` : '';
+  return el(`<div class="card" style="border-color:var(--good)">
+    <div class="k">${hint('fpl_squad_points', esc(sq.entry_name))}</div>
+    <div class="v">${value}</div>
+    <div class="s">best XI over ${h} GW · ${hint('my_squad', 'squad as at GW' + sq.gameweek)}${missing}</div>
+  </div>`);
+}
+
+/* Either how to connect a team, or what the connected one cannot know yet. Both are one line. */
+function squadNote() {
+  const entry = S.config.fpl_entry;
+  const sq = S.board.squad;
+  if (sq) {
+    const behind = S.board.gameweeks[0] - sq.gameweek;
+    if (behind <= 1) return null;
+    return el(`<div class="notice" style="border-left-color:var(--warn)">
+      <b>Your stored squad is from GW${sq.gameweek}, but this run starts at
+      GW${S.board.gameweeks[0]}.</b> Gameweeks in between have been played and your team may have
+      changed. Refresh it: <code>./run.sh -m src.fpl.squad --refresh</code></div>`);
+  }
+  if (entry && entry.note) {
+    return el(`<div class="notice"><b>${esc(entry.entry_name)}</b> is connected but has no
+      published squad yet. ${esc(entry.note)}</div>`);
+  }
+  return el(`<div class="notice"><span class="muted">No classic-FPL team connected, so the board
+    cannot tell your players from everyone else's. Connect yours once:
+    <code>./run.sh -m src.fpl.squad --entry &lt;your entry id&gt;</code> — the id is the number in
+    your team page's address on fantasy.premierleague.com.</span></div>`);
 }
 
 /** What this pick costs at each position, which is the question you face on the clock. */
@@ -440,7 +654,14 @@ function filterBar() {
     .concat(S.config.positions.map((p) => `<option ${S.filters.pos === p ? 'selected' : ''}>${p}</option>`)).join('');
   const teamOptions = ['<option value="">all clubs</option>']
     .concat(S.config.teams.map((t) => `<option ${S.filters.team === t ? 'selected' : ''}>${t}</option>`)).join('');
+  const squadScopes = [
+    ['all', 'all players'], ['mine', 'my squad'], ['others', 'not my squad'],
+  ].map(([id, label]) =>
+    `<option value="${id}" ${S.filters.squad === id ? 'selected' : ''}>${label}</option>`).join('');
   bar.innerHTML = `
+    ${S.view === 'draft' ? '' : horizonFields()}
+    ${S.view === 'draft' || !S.board.squad ? '' : `<span class="muted">${hint('squad_scope', 'show')}</span>
+      <select id="fsquad">${squadScopes}</select>`}
     <input id="fq" placeholder="search name" value="${esc(S.filters.q)}" style="width:150px">
     <select id="fpos">${posOptions}</select>
     <select id="fteam">${teamOptions}</select>
@@ -451,6 +672,7 @@ function filterBar() {
     <span class="spacer"></span>
     <span class="muted" id="count"></span>`;
   setTimeout(() => {
+    wireHorizons(bar);
     bar.querySelector('#fq').oninput = (e) => { S.filters.q = e.target.value; redrawRows(); };
     bar.querySelector('#fpos').onchange = (e) => { S.filters.pos = e.target.value; redrawRows(); };
     bar.querySelector('#fteam').onchange = (e) => { S.filters.team = e.target.value; redrawRows(); };
@@ -458,6 +680,8 @@ function filterBar() {
     if (live) live.onchange = (e) => { S.filters.live = e.target.checked; render(); };
     const hide = bar.querySelector('#fhide');
     if (hide) hide.onchange = (e) => { S.filters.hideTaken = e.target.checked; redrawRows(); };
+    const squad = bar.querySelector('#fsquad');
+    if (squad) squad.onchange = (e) => { S.filters.squad = e.target.value; redrawRows(); };
   });
   return bar;
 }
@@ -465,9 +689,22 @@ function filterBar() {
 function boardTable(cols) {
   const wrap = el('<div class="tablewrap"><table><thead><tr></tr></thead><tbody id="rows"></tbody></table></div>');
   const tr = wrap.querySelector('thead tr');
-  cols.forEach(([key, label]) => {
-    const th = el(`<th data-k="${key}">${hint(key, label)}${S.sort === key ? (S.desc ? ' ▾' : ' ▴') : ''}</th>`);
+  cols.forEach(([key, label, help]) => {
+    const horizon = horizonOf(key);
+    const deciding = horizon && S.board && horizon === S.board.sort_horizon;
+    const arrow = S.sort === key || (deciding && S.sort === 'rank') ? (S.desc ? ' ▾' : ' ▴') : '';
+    const th = el(`<th data-k="${key}" style="${deciding ? 'color:var(--accent)' : ''}">`
+      + hint(help || key, label) + arrow + '</th>');
     th.onclick = () => {
+      if (horizon) {
+        // Clicking a horizon decides on it, rather than sorting by one horizon while '#',
+        // 'per GW' and 'pts/£' still answer another.
+        S.sortHorizon = horizon;
+        S.sort = 'rank';
+        S.desc = true;
+        render();
+        return;
+      }
       if (S.sort === key) S.desc = !S.desc; else { S.sort = key; S.desc = true; }
       renderBoard(document.getElementById('main'));
     };
@@ -484,14 +721,15 @@ function visibleRows() {
     (!f.pos || row.position === f.pos) &&
     (!f.team || row.team === f.team) &&
     (!q || row.web_name.toLowerCase().includes(q)) &&
-    (!f.hideTaken || !row.owner)
+    (!f.hideTaken || !row.owner) &&
+    (f.squad === 'all' || (f.squad === 'mine') === Boolean(row.squad))
   );
 }
 
 function redrawRows() {
   const body = document.getElementById('rows');
   if (!body) return;
-  const cols = S.view === 'draft' ? DRAFT_COLS : FPL_COLS;
+  const cols = boardCols();
   const rows = visibleRows();
   if (S.sort !== 'rank') {
     rows.sort((a, b) => {
@@ -505,7 +743,7 @@ function redrawRows() {
   rows.forEach((row) => {
     const tierBreak = S.view === 'draft' && S.sort === 'rank' && row.tier && row.tier !== lastTier && lastTier !== null;
     lastTier = row.tier;
-    const tr = el(`<tr class="${row.owner ? 'taken' : ''} ${row.owner === 'mine' ? 'mine' : ''} ${tierBreak ? 'tierbreak' : ''}"></tr>`);
+    const tr = el(`<tr class="${row.owner ? 'taken' : ''} ${row.owner === 'mine' || row.squad ? 'mine' : ''} ${tierBreak ? 'tierbreak' : ''}"></tr>`);
     cols.forEach(([key]) => tr.append(cell(row, key)));
     body.append(tr);
   });
@@ -516,7 +754,7 @@ function redrawRows() {
 function cell(row, key) {
   const td = document.createElement('td');
   if (key === 'web_name') {
-    td.innerHTML = `<span class="name">${esc(row.web_name)}</span>${flagChips(row)}`;
+    td.innerHTML = `<span class="name">${esc(row.web_name)}</span>${squadChip(row)}${flagChips(row)}`;
     td.querySelector('.name').onclick = () => openPlayer(row.player_id);
     return td;
   }
@@ -535,10 +773,30 @@ function cell(row, key) {
   if (key === 'position' || key === 'team') { td.textContent = row[key]; return td; }
   if (key === 'p_start' || key === 'dc_hit_rate') { td.textContent = pct(row[key]); return td; }
   if (key === 'dc_sample') { td.textContent = row[key]; return td; }
+  const horizon = horizonOf(key);
   const value = cellValue(row, key);
+  if (horizon) {
+    td.textContent = n1(value);
+    if (horizon === S.board.sort_horizon) td.style.color = 'var(--accent)';
+    const blanks = row.horizon_blanks[horizon];
+    if (blanks) td.title = `${blanks} of these ${horizon} gameweeks is a blank — his club does `
+      + 'not play, so those weeks are zero, not missing.';
+    return td;
+  }
   td.textContent = key === 'ownership' || key === 'price' ? n1(value) : n2(value);
   if (key === 'vorp' && value != null) td.className = value >= 0 ? 'pos-good' : 'pos-bad';
   return td;
+}
+
+/** Where one of ours sat in the last team we submitted. Nothing for everyone else. */
+function squadChip(row) {
+  const pick = row.squad;
+  if (!pick) return '';
+  const gameweek = S.board.squad ? S.board.squad.gameweek : null;
+  const label = pick.is_captain ? 'C' : pick.is_vice_captain ? 'V' : pick.is_bench ? 'bench' : 'XI';
+  const where = pick.is_bench ? `on the bench, slot ${pick.slot}` : `in the eleven, slot ${pick.slot}`;
+  const armband = pick.is_captain ? ', captain' : pick.is_vice_captain ? ', vice-captain' : '';
+  return `<span class="flag" title="${esc(`Yours: ${where}${armband}, as at GW${gameweek}. ${helpText('squad_slot')}`)}">${label}</span>`;
 }
 
 const STATUS_MEANING = {
@@ -698,11 +956,72 @@ function historyBlock(data) {
   }).join('');
   const coverage = Object.entries(data.history_coverage)
     .map(([season, range]) => `${season} GW${range[0]}–${range[1]}`).join(', ');
-  return el(`<section class="block"><h3>Per-match history</h3>
+  const section = el(`<section class="block"><h3>Per-match history</h3>
     <div class="muted">Green = cleared the defensive threshold; dashed = came off the bench; faded = did not play.
       Numbers are points. Hover for detail.</div>
     <div class="strip">${cells}</div>
     <div class="muted">Coverage: ${esc(coverage)} — ${data.history.length} matches.</div></section>`);
+  section.append(gameLog(data));
+  return section;
+}
+
+const GAME_LOG_SHOWN = 12;
+
+/** What actually happened, match by match. The strip shows the shape; this shows the games. */
+function gameLog(data) {
+  const played = data.history.slice().reverse();
+  const rows = played.map((m, index) => {
+    const result = m.team_score == null ? '–'
+      : `${m.team_score}–${m.opponent_score} <span class="${m.team_score > m.opponent_score ? 'pos-good'
+        : (m.team_score < m.opponent_score ? 'pos-bad' : 'muted')}">${
+        m.team_score > m.opponent_score ? 'W' : (m.team_score < m.opponent_score ? 'L' : 'D')}</span>`;
+    const how = !m.minutes ? '<span class="flag warn">out</span>'
+      : (m.started ? '' : '<span class="flag">sub</span>');
+    return `<tr class="${index >= GAME_LOG_SHOWN ? 'extra' : ''}"
+      title="${esc(`BPS ${m.bps}` + (m.cards ? ` · ${m.cards} card(s)` : '')
+        + (m.own_goals ? ` · ${m.own_goals} own goal(s)` : ''))}">
+      <td>${esc(m.season.slice(2, 4))}/${esc(m.season.slice(7))} GW${m.gameweek}</td>
+      <td>${m.was_home ? 'v' : '@'} ${esc(m.opponent)}</td>
+      <td>${result}</td>
+      <td>${m.minutes}′ ${how}</td>
+      <td><b>${m.points}</b></td>
+      <td>${m.goals || '·'}</td>
+      <td>${m.assists || '·'}</td>
+      <td>${m.clean_sheet ? '✓' : '·'}</td>
+      <td>${m.goals_conceded || '·'}</td>
+      <td class="${m.defensive_hit ? 'pos-good' : ''}">${m.defensive_actions}${m.defensive_hit ? ' ✓' : ''}</td>
+      <td>${m.bonus || '·'}</td>
+      <td>${n2(m.expected_goals)}</td>
+      <td>${n2(m.expected_assists)}</td>
+      <td>${n2(m.expected_goals_conceded)}</td></tr>`;
+  }).join('');
+  const wrap = el(`<div>
+    <table class="gamelog">
+      <thead><tr>
+        <th><span class="hint" title="Season and gameweek. Newest first.">When</span></th>
+        <th><span class="hint" title="v = at home, @ = away.">Opp</span></th>
+        <th><span class="hint" title="His club's score first. The result of the match, not of his afternoon.">Score</span></th>
+        <th><span class="hint" title="Minutes played. &quot;sub&quot; means he came off the bench, &quot;out&quot; that he did not play at all.">Min</span></th>
+        <th><span class="hint" title="FPL points he actually scored in that match.">Pts</span></th>
+        <th>G</th><th>A</th>
+        <th><span class="hint" title="His club kept a clean sheet and he played 60 minutes or more.">CS</span></th>
+        <th><span class="hint" title="Goals his club conceded while he was on the pitch. Costs a defender or keeper 1 point per 2.">GC</span></th>
+        <th>${hint('defensive_contribution', 'DC')}</th>
+        <th>${hint('bonus', 'B')}</th>
+        <th>${hint('match_xg', 'xG')}</th>
+        <th>${hint('match_xa', 'xA')}</th>
+        <th>${hint('match_xgc', 'xGC')}</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>`);
+  if (played.length > GAME_LOG_SHOWN) {
+    const button = el(`<button class="act" style="margin-top:6px">show all ${played.length} matches</button>`);
+    button.onclick = () => {
+      const table = wrap.querySelector('.gamelog');
+      const all = table.classList.toggle('showall');
+      button.textContent = all ? `show the last ${GAME_LOG_SHOWN}` : `show all ${played.length} matches`;
+    };
+    wrap.append(button);
+  }
+  return wrap;
 }
 
 function feedbackForm(data) {
@@ -848,18 +1167,666 @@ async function renderFeedback(main) {
       <th>model pts</th><th>Note</th><th>${hint('run', 'Run')}</th></tr>${rows}</table></div>`));
 }
 
+/* ------------------------------------------------------------- waivers */
+/* In-season swaps. The draft board answers "who is worth most"; this answers "what would this
+   free agent add to MY fifteen", which is a different number: a signing who would sit on the
+   bench gains nothing, and the game only allows same-position swaps. */
+
+function waiverSetup(detail) {
+  return el(`<div class="notice err">
+    <b>No draft league connected yet.</b><br>
+    <span class="muted">${esc(detail)}</span><br><br>
+    Your entry id is the number in the address of your team page on
+    <code>draft.premierleague.com</code>. Then, from the repo:<br>
+    <code>./run.sh -m src.fpl.league --entry &lt;your entry id&gt;</code><br><br>
+    Run it again before every waiver deadline: ownership changes the moment someone else's
+    claim clears, and this page will not guess.
+  </div>`);
+}
+
+async function renderWaivers(main) {
+  const w = S.waivers;
+  if (!S.runId) {
+    main.innerHTML = `<div class="notice"><b>No draft runs yet.</b><br>
+      Generate one covering the gameweeks you want:
+      <code>./run.sh -m src.fpl.project --game draft --gw-from ${S.config.next_gameweek}
+      --gw-to ${S.config.next_gameweek + 9}</code></div>`;
+    return;
+  }
+  let board;
+  try {
+    board = await api(`/waivers?run_id=${encodeURIComponent(S.runId)}`
+      + `&horizons=${S.horizons.join(',')}&sort_horizon=${S.sortHorizon}`
+      + `&include_locked=${w.includeLocked}`);
+  } catch (err) {
+    main.innerHTML = '';
+    main.append(err.message.includes('src.fpl.league')
+      ? waiverSetup(err.message)
+      : el(`<div class="notice err"><b>${esc(err.message)}</b></div>`));
+    main.append(waiverControls());
+    return;
+  }
+  w.board = board;
+  const head = board.run;
+
+  main.innerHTML = '';
+  main.append(el(`<div class="notice" style="border-left-color:var(--accent)">
+    <b>${esc(board.league.league_name)}</b> · ${esc(board.league.transaction_mode)} ·
+    ${board.league.entries.length} managers ·
+    ownership fetched ${esc(board.league.fetched_at.replace('T', ' '))}<br>
+    <span class="muted">${esc(head.method.name)} · projected GW${head.gameweek_from}–${head.gameweek_to} ·
+    horizons start at GW${board.gameweek_from}.
+    Refresh ownership with <code>./run.sh -m src.fpl.league --refresh</code></span>
+  </div>`));
+  if (board.gameweek_from !== board.next_gameweek) {
+    main.append(el(`<div class="notice"><b>This run starts at GW${board.gameweek_from}, but the
+      next gameweek is GW${board.next_gameweek}.</b> Every horizon below is counted from
+      GW${board.gameweek_from}, so a "1 gameweek" number is about GW${board.gameweek_from}, not
+      GW${board.next_gameweek}. Generate a run from the right gameweek:
+      <code>./run.sh -m src.fpl.project --game draft --gw-from ${board.next_gameweek}
+      --gw-to ${board.next_gameweek + 9}</code></div>`));
+  }
+  if (board.considered.unprojected) {
+    main.append(el(`<div class="notice">${board.considered.unprojected} free agent(s) have no
+      projection in this run and are not ranked — usually players added to the game since it was
+      generated. Regenerate the run to include them.</div>`));
+  }
+  main.append(waiverCards());
+  main.append(waiverControls());
+  if (w.mode === 'players') {
+    main.append(playerTable());
+  } else {
+    main.append(candidateTable());
+    main.append(squadTable());
+  }
+}
+
+function waiverCards() {
+  const b = S.waivers.board;
+  const wrap = el('<div class="cards"></div>');
+  b.horizons.forEach((h) => {
+    const on = h === b.sort_horizon;
+    wrap.append(el(`<div class="card" style="${on ? 'border-color:var(--accent)' : ''}">
+      <div class="k">${hint('squad_points', 'Squad, ' + h + ' GW')}</div>
+      <div class="v">${n1(b.squad.points[h])}</div>
+      <div class="s">GW${b.gameweek_from}–${b.gameweek_from + h - 1}${on ? ' · deciding' : ''}</div>
+    </div>`));
+  });
+  const top = b.candidates[0];
+  if (top && top.gain[b.sort_horizon] > 0) {
+    wrap.append(el(`<div class="card">
+      <div class="k">${hint('waiver_gain', 'Best claim')}</div>
+      <div class="v pos-good">${esc(top.web_name)} ${signed(top.gain[b.sort_horizon])}</div>
+      <div class="s">drop ${esc(top.out.web_name)} · over ${b.sort_horizon} GW</div>
+    </div>`));
+  } else {
+    wrap.append(el(`<div class="card">
+      <div class="k">${hint('waiver_gain', 'Best claim')}</div>
+      <div class="v">none</div>
+      <div class="s">no free agent improves this squad</div>
+    </div>`));
+  }
+  const mine = b.league.entries.find((e) => e.is_mine);
+  wrap.append(el(`<div class="card">
+    <div class="k">${hint('waiver_pick', 'Your waiver order')}</div>
+    <div class="v">${mine.waiver_pick == null ? '–' : mine.waiver_pick}</div>
+    <div class="s">${b.considered.pool} in the pool · ${b.considered.improving} improve you
+      ${b.considered.locked ? '· ' + b.considered.locked + ' locked' : ''}</div>
+  </div>`));
+  return wrap;
+}
+
+function waiverControls() {
+  const w = S.waivers;
+  const bar = el('<div class="row"></div>');
+  const inputs = horizonInputs();
+  const options = horizonOptions();
+  const posOptions = ['<option value="">all positions</option>']
+    .concat(S.config.positions.map((p) => `<option ${w.pos === p ? 'selected' : ''}>${p}</option>`)).join('');
+  const scopes = [
+    ['available', 'available to me'], ['mine', 'mine'], ['all', 'all players'], ['free', 'free agents'],
+  ].map(([id, label]) =>
+    `<option value="${id}" ${w.scope === id ? 'selected' : ''}>${label}</option>`).join('');
+  bar.innerHTML = `
+    <span class="modes">
+      <button class="act ${w.mode === 'claims' ? 'on' : ''}" data-mode="claims"
+        title="${esc(helpText('waiver_gain'))}">claims</button>
+      <button class="act ${w.mode === 'players' ? 'on' : ''}" data-mode="players"
+        title="${esc(helpText('player_list'))}">all players</button>
+    </span>
+    <span class="muted">${hint('horizon', 'horizons')}</span> ${inputs}
+    <span class="muted">decide on</span> <select class="hsort">${options}</select>
+    ${w.mode === 'players'
+      ? `<span class="muted">${hint('owner_scope', 'show')}</span> <select id="wscope">${scopes}</select>`
+      : ''}
+    <select id="wpos">${posOptions}</select>
+    <input id="wq" placeholder="search name" value="${esc(w.q)}" style="width:140px">
+    ${w.mode === 'claims' ? `
+      <label><input type="checkbox" id="wgain" ${w.onlyGains ? 'checked' : ''}>
+        <span class="hint" title="Hides every free agent who would not improve your best eleven at the deciding horizon. In a settled league that is most of them.">only improvements</span></label>
+      <label><input type="checkbox" id="wlock" ${w.includeLocked ? 'checked' : ''}>
+        ${hint('claimable', 'show locked')}</label>` : ''}
+    <span class="spacer"></span>
+    <span class="muted" id="wcount"></span>`;
+  setTimeout(() => {
+    wireHorizons(bar);
+    const redraw = () => (w.mode === 'players' ? redrawPlayers() : redrawCandidates());
+    bar.querySelectorAll('[data-mode]').forEach((button) => {
+      button.onclick = () => { w.mode = button.dataset.mode; render(); };
+    });
+    bar.querySelector('#wpos').onchange = (e) => { w.pos = e.target.value; redraw(); };
+    bar.querySelector('#wq').oninput = (e) => { w.q = e.target.value; redraw(); };
+    const scope = bar.querySelector('#wscope');
+    if (scope) scope.onchange = (e) => { w.scope = e.target.value; redrawPlayers(); };
+    const gain = bar.querySelector('#wgain');
+    if (gain) gain.onchange = (e) => { w.onlyGains = e.target.checked; redrawCandidates(); };
+    const lock = bar.querySelector('#wlock');
+    if (lock) lock.onchange = (e) => { w.includeLocked = e.target.checked; render(); };
+  });
+  return bar;
+}
+
+function candidateCols() {
+  const b = S.waivers.board;
+  const cols = [
+    ['rank', '#', 'rank'], ['web_name', 'Sign', 'web_name'], ['team', 'Club', 'team'],
+    ['position', 'Pos', 'position'], ['p_start', 'Start%', 'p_start'],
+    ['own_points', `pts ${b.sort_horizon} GW`, 'points'],
+  ];
+  b.horizons.forEach((h) => cols.push([`gain${h}`, `+${h} GW`, 'waiver_gain']));
+  cols.push(['out', 'Drop', 'waiver_out'], ['out_starts', 'drop starts', 'starts'],
+            ['claimable', 'Status', 'claimable']);
+  return cols;
+}
+
+function candidateTable() {
+  const wrap = el('<div class="tablewrap"><table><thead><tr></tr></thead><tbody id="wrows"></tbody></table></div>');
+  const tr = wrap.querySelector('thead tr');
+  const b = S.waivers.board;
+  candidateCols().forEach(([key, label, helpKey]) => {
+    const isSort = key === 'gain' + b.sort_horizon;
+    const th = el(`<th data-k="${key}" style="${isSort ? 'color:var(--accent)' : ''}">`
+      + hint(helpKey, label) + (S.waivers.sort === key ? (S.waivers.desc ? ' ▾' : ' ▴') : '') + '</th>');
+    th.onclick = () => {
+      const horizon = key.startsWith('gain') ? Number(key.slice(4)) : null;
+      if (horizon && horizon !== b.sort_horizon) {
+        // The drop suggested next to each player is the best one *at the deciding horizon*, so
+        // changing which horizon decides has to be re-asked of the server, not re-sorted here.
+        S.sortHorizon = horizon;
+        render();
+        return;
+      }
+      if (S.waivers.sort === key) S.waivers.desc = !S.waivers.desc;
+      else { S.waivers.sort = key; S.waivers.desc = true; }
+      redrawCandidates();
+    };
+    tr.append(th);
+  });
+  setTimeout(redrawCandidates);
+  return wrap;
+}
+
+const candidateValue = (row, key) => {
+  if (key.startsWith('gain')) return row.gain[Number(key.slice(4))];
+  if (key === 'own_points') return row.points[S.waivers.board.sort_horizon];
+  if (key === 'out_starts') return row.out.starts[S.waivers.board.sort_horizon];
+  if (key === 'out') return row.out.web_name;
+  if (key === 'claimable') return row.claimable ? 1 : 0;
+  return row[key];
+};
+
+function redrawCandidates() {
+  const body = document.getElementById('wrows');
+  if (!body) return;
+  const w = S.waivers;
+  const b = w.board;
+  const query = w.q.trim().toLowerCase();
+  const rows = b.candidates.filter((row) =>
+    (!w.pos || row.position === w.pos)
+    && (!w.onlyGains || row.gain[b.sort_horizon] > 0)
+    && (!query || row.web_name.toLowerCase().includes(query)));
+  if (w.sort !== 'rank') {
+    rows.sort((a, c) => {
+      const x = candidateValue(a, w.sort), y = candidateValue(c, w.sort);
+      if (typeof x === 'string') return w.desc ? y.localeCompare(x) : x.localeCompare(y);
+      return w.desc ? (y ?? -1e9) - (x ?? -1e9) : (x ?? 1e9) - (y ?? 1e9);
+    });
+  }
+  body.innerHTML = '';
+  rows.forEach((row) => {
+    const tr = el(`<tr class="${row.claimable ? '' : 'taken'}"></tr>`);
+    candidateCols().forEach(([key]) => {
+      const td = document.createElement('td');
+      if (key === 'web_name') {
+        td.innerHTML = `<span class="name">${esc(row.web_name)}</span>${flagChips(row)}`;
+        td.querySelector('.name').onclick = () => openPlayer(row.player_id);
+      } else if (key === 'out') {
+        td.innerHTML = `<span class="name">${esc(row.out.web_name)}</span>`;
+        td.querySelector('.name').onclick = () => openPlayer(row.out.player_id);
+      } else if (key.startsWith('gain')) {
+        const value = row.gain[Number(key.slice(4))];
+        td.textContent = signed(value);
+        td.className = value > 0.05 ? 'pos-good' : (value < -0.05 ? 'pos-bad' : 'muted');
+      } else if (key === 'p_start') {
+        td.textContent = pct(row.p_start);
+      } else if (key === 'claimable') {
+        td.innerHTML = row.claimable
+          ? '<span class="flag good">free</span>'
+          : `<span class="flag warn" title="${esc(helpText('claimable'))}">locked</span>`;
+      } else if (key === 'out_starts') {
+        td.textContent = `${row.out.starts[b.sort_horizon]} of ${b.sort_horizon}`;
+      } else if (key === 'rank' || key === 'team' || key === 'position') {
+        td.textContent = row[key];
+      } else {
+        td.textContent = n1(candidateValue(row, key));
+      }
+      tr.append(td);
+    });
+    body.append(tr);
+  });
+  const count = document.getElementById('wcount');
+  if (count) {
+    count.textContent = `${rows.length} shown of ${b.considered.ranked} ranked`
+      + ` · ${b.considered.improving} improve the squad`;
+  }
+}
+
+/* The plain board: every player, his points at each horizon, and who holds him. Ranked by
+   points rather than by swap gain, because this is the view you pick a team from. */
+
+const OWNER_KIND = {
+  mine: ['yours', 'good'],
+  free: ['free', 'good'],
+  locked: ['locked', 'warn'],
+  rival: ['taken', ''],
+  unknown: ['owner unknown', 'warn'],
+};
+
+function playerCols() {
+  const b = S.waivers.board;
+  const cols = [
+    ['rank', '#', 'rank'], ['web_name', 'Player', 'web_name'], ['team', 'Club', 'team'],
+    ['position', 'Pos', 'position'], ['p_start', 'Start%', 'p_start'],
+  ];
+  b.horizons.forEach((h) => cols.push([`points${h}`, `${h} GW`, 'points']));
+  cols.push(['starts', 'starts', 'starts'], ['owner_kind', 'Owner', 'ownership_label']);
+  return cols;
+}
+
+const playerValue = (row, key) => {
+  if (key.startsWith('points')) return row.points[Number(key.slice(6))];
+  if (key === 'points') return row.points[S.waivers.board.sort_horizon];
+  if (key === 'starts') return row.starts ? row.starts[S.waivers.board.sort_horizon] : -1;
+  if (key === 'owner_kind') return row.ownership;
+  return row[key];
+};
+
+const inScope = (row, scope) => (
+  scope === 'all' ? true
+    : scope === 'mine' ? row.owner_kind === 'mine'
+    : scope === 'free' ? row.owner_kind === 'free'
+    : row.owner_kind === 'mine' || row.owner_kind === 'free'
+);
+
+function playerTable() {
+  const b = S.waivers.board;
+  const wrap = el('<div class="tablewrap"><table><thead><tr></tr></thead><tbody id="prows"></tbody></table></div>');
+  const tr = wrap.querySelector('thead tr');
+  playerCols().forEach(([key, label, helpKey]) => {
+    const isSort = key === 'points' + b.sort_horizon;
+    const th = el(`<th data-k="${key}" style="${isSort ? 'color:var(--accent)' : ''}">`
+      + hint(helpKey, label)
+      + (S.waivers.psort === key ? (S.waivers.pdesc ? ' ▾' : ' ▴') : '') + '</th>');
+    th.onclick = () => {
+      if (S.waivers.psort === key) S.waivers.pdesc = !S.waivers.pdesc;
+      else { S.waivers.psort = key; S.waivers.pdesc = true; }
+      redrawPlayers();
+    };
+    tr.append(th);
+  });
+  setTimeout(redrawPlayers);
+  return wrap;
+}
+
+function redrawPlayers() {
+  const body = document.getElementById('prows');
+  if (!body) return;
+  const w = S.waivers;
+  const b = w.board;
+  const query = w.q.trim().toLowerCase();
+  const rows = b.players.filter((row) =>
+    inScope(row, w.scope)
+    && (!w.pos || row.position === w.pos)
+    && (!query || row.web_name.toLowerCase().includes(query)));
+  // Default sort is the deciding horizon, so the key has to resolve to it rather than to a
+  // column that only exists in the claims table.
+  const key = w.psort === 'points' ? 'points' + b.sort_horizon : w.psort;
+  rows.sort((a, c) => {
+    const x = playerValue(a, key), y = playerValue(c, key);
+    if (typeof x === 'string') return w.pdesc ? y.localeCompare(x) : x.localeCompare(y);
+    return w.pdesc ? (y ?? -1e9) - (x ?? -1e9) : (x ?? 1e9) - (y ?? 1e9);
+  });
+  body.innerHTML = '';
+  rows.forEach((row, index) => {
+    const tr = el(`<tr class="${row.owner_kind === 'rival' ? 'taken' : ''} ${row.owner_kind === 'mine' ? 'mine' : ''}"></tr>`);
+    playerCols().forEach(([col]) => {
+      const td = document.createElement('td');
+      if (col === 'rank') {
+        td.textContent = index + 1;
+      } else if (col === 'web_name') {
+        td.innerHTML = `<span class="name">${esc(row.web_name)}</span>${flagChips(row)}`;
+        td.querySelector('.name').onclick = () => openPlayer(row.player_id);
+      } else if (col === 'p_start') {
+        td.textContent = pct(row.p_start);
+      } else if (col === 'starts') {
+        td.textContent = row.starts ? `${row.starts[b.sort_horizon]} of ${b.sort_horizon}` : '–';
+      } else if (col === 'owner_kind') {
+        const [label, kind] = OWNER_KIND[row.owner_kind] || [row.owner_kind, ''];
+        td.innerHTML = `<span class="flag ${kind}" title="${esc(row.ownership)}">${esc(label)}</span>`;
+      } else if (col === 'team' || col === 'position') {
+        td.textContent = row[col];
+      } else {
+        td.textContent = n1(playerValue(row, col));
+      }
+      tr.append(td);
+    });
+    body.append(tr);
+  });
+  const count = document.getElementById('wcount');
+  if (count) {
+    const mine = rows.filter((row) => row.owner_kind === 'mine').length;
+    count.textContent = `${rows.length} of ${b.players.length} players`
+      + (mine ? ` · ${mine} yours` : '');
+  }
+}
+
+function squadTable() {
+  const b = S.waivers.board;
+  const head = b.horizons.map((h) => `<th>${hint('points', h + ' GW')}</th>`).join('');
+  const rows = b.squad.players.map((p) => `<tr>
+    <td>${esc(p.position)}</td>
+    <td><span class="name" onclick="openPlayer(${p.player_id})">${esc(p.web_name)}</span>${flagChips(p)}</td>
+    <td>${esc(p.team)}</td>
+    <td>${pct(p.p_start)}</td>
+    ${b.horizons.map((h) => `<td>${n1(p.points[h])}</td>`).join('')}
+    <td>${p.starts[b.sort_horizon]} of ${b.sort_horizon}</td>
+    <td>${p.blanks[b.sort_horizon] || '–'}</td></tr>`).join('');
+  const section = el(`<section class="block"><h3>Your squad, and who is only cover</h3>
+    <div class="tablewrap" style="max-height:none">
+      <table><thead><tr><th>Pos</th><th>${hint('web_name', 'Player')}</th><th>Club</th>
+        <th>${hint('p_start', 'Start%')}</th>${head}
+        <th>${hint('starts', 'starts')}</th><th>${hint('blanks', 'blanks')}</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></section>`);
+  return section;
+}
+
 /* ------------------------------------------------------------- glossary */
 
 /** The same explanations the hover hints use, grouped so they can be read straight through. */
 const GLOSSARY_GROUPS = [
-  ['Reading the board', ['rank', 'web_name', 'position', 'points', 'points_per_gameweek', 'vorp', 'drop_next', 'wait_cost', 'replacement', 'tier', 'live']],
+  ['Reading the board', ['rank', 'web_name', 'position', 'points', 'points_per_gameweek', 'horizon', 'horizon_points', 'horizon_per_gameweek', 'vorp', 'drop_next', 'wait_cost', 'replacement', 'tier', 'live']],
   ['Where the points come from', ['appearance', 'goals', 'assists', 'clean_sheets', 'defensive_contribution', 'saves', 'goals_conceded', 'bonus', 'cards']],
   ['Playing time', ['p_start', 'role_share', 'availability', 'expected_minutes', 'preseason_weight', 'transfer_multiplier']],
   ['How much to trust a number', ['shrinkage', 'dc_hit_rate', 'dc_sample', 'sample_minutes']],
   ['Fixtures and clubs', ['clean_sheet_probability', 'attack_multiplier']],
-  ['Classic FPL only', ['price', 'points_per_million', 'ownership']],
+  ['Classic FPL only', ['price', 'horizon_per_million', 'points_per_million', 'ownership', 'my_squad', 'squad_scope', 'squad_slot', 'fpl_squad_points']],
+  ['Reading one match', ['match_xg', 'match_xa', 'match_xgc']],
+  ['Waivers: swapping a player in-season', ['horizon', 'waiver_gain', 'waiver_out', 'squad_points', 'starts', 'blanks', 'claimable', 'ownership_label', 'waiver_pick', 'player_list', 'owner_scope']],
   ['Runs, comparison and scoring', ['run', 'method', 'rank_delta', 'points_delta', 'brier', 'mae', 'your_p_start']],
 ];
+
+/* ----------------------------------------------------------- transfers */
+
+/* The classic-FPL counterpart of the waivers page. Same metric - best legal XI before and after
+   the swap - narrowed by a budget, a three-per-club cap and the 4-point hit. The hit is why this
+   screen leads with `net` rather than `gain`: most rows here are worth less than four points. */
+
+async function renderTransfers(main) {
+  const t = S.transfers;
+  if (!S.runId) {
+    main.innerHTML = `<div class="notice"><b>No FPL runs yet.</b><br>
+      Generate one: <code>./run.sh -m src.fpl.project --game fpl</code></div>`;
+    return;
+  }
+  let board;
+  try {
+    board = await api(`/transfers?run_id=${encodeURIComponent(S.runId)}`
+      + `&horizons=${S.horizons.join(',')}&sort_horizon=${S.sortHorizon}`
+      + `&free_transfers=${t.freeTransfers}`);
+  } catch (err) {
+    main.innerHTML = '';
+    main.append(el(`<div class="notice err"><b>${esc(err.message)}</b></div>`));
+    return;
+  }
+  t.board = board;
+  const head = board.run;
+
+  main.innerHTML = '';
+  main.append(el(`<div class="notice" style="border-left-color:var(--accent)">
+    <b>${esc(board.squad.entry_name)}</b> (${esc(board.squad.manager)}) ·
+    squad as at GW${board.squad.gameweek}${board.squad.active_chip ? ' · chip ' + esc(board.squad.active_chip) : ''} ·
+    bank £${n1(board.budget.bank)}m · value £${n1(board.budget.squad_value)}m<br>
+    <span class="muted">${esc(head.method.name)} · projected GW${head.gameweek_from}–${head.gameweek_to} ·
+    horizons start at GW${board.gameweek_from}.
+    Refresh picks with <code>./run.sh -m src.fpl.squad --refresh</code></span>
+  </div>`));
+
+  /* Two caveats that change what the table means, so neither is buried in a tooltip. */
+  main.append(el(`<div class="notice"><b>Your squad is GW${board.squad.gameweek}'s, and selling
+    prices are approximate.</b> FPL publishes an entry's picks only after the deadline, so a
+    transfer you have already made for GW${board.next_gameweek} is not visible here. And the public
+    API does not publish what you paid for a player, so every budget below uses his
+    <em>current</em> price — a player who has risen sells for less than that, making these budgets
+    an upper bound.</div>`));
+
+  if (board.gameweek_from !== board.next_gameweek) {
+    main.append(el(`<div class="notice"><b>This run starts at GW${board.gameweek_from}, but the
+      next gameweek is GW${board.next_gameweek}.</b> Every horizon below is counted from
+      GW${board.gameweek_from}. Generate a run from the right gameweek:
+      <code>./run.sh -m src.fpl.project --game fpl</code></div>`));
+  }
+  main.append(transferCards());
+  main.append(transferControls());
+  main.append(transferTable());
+  main.append(transferSquadTable());
+}
+
+function transferCards() {
+  const b = S.transfers.board;
+  const wrap = el('<div class="cards"></div>');
+  b.horizons.forEach((h) => {
+    const on = h === b.sort_horizon;
+    wrap.append(el(`<div class="card" style="${on ? 'border-color:var(--accent)' : ''}">
+      <div class="k">${hint('squad_points', 'Squad, ' + h + ' GW')}</div>
+      <div class="v">${n1(b.squad.points[h])}</div>
+      <div class="s">GW${b.gameweek_from}–${b.gameweek_from + h - 1}${on ? ' · deciding' : ''}</div>
+    </div>`));
+  });
+  const top = b.candidates[0];
+  if (top) {
+    const net = top.net[b.sort_horizon];
+    wrap.append(el(`<div class="card">
+      <div class="k">${hint('transfer_gain', 'Best transfer')}</div>
+      <div class="v ${net > 0 ? 'pos-good' : ''}">${esc(top.web_name)} ${signed(top.gain[b.sort_horizon])}</div>
+      <div class="s">sell ${esc(top.out.web_name)} · net ${signed(net)} over ${b.sort_horizon} GW</div>
+    </div>`));
+  } else {
+    wrap.append(el(`<div class="card">
+      <div class="k">${hint('transfer_gain', 'Best transfer')}</div>
+      <div class="v">none</div>
+      <div class="s">nothing affordable improves this squad</div>
+    </div>`));
+  }
+  wrap.append(el(`<div class="card">
+    <div class="k">${hint('transfer_budget', 'Bank')}</div>
+    <div class="v">£${n1(b.budget.bank)}m</div>
+    <div class="s">${b.considered.improving} of ${b.considered.scored} legal swaps improve you</div>
+  </div>`));
+  return wrap;
+}
+
+function transferControls() {
+  const t = S.transfers;
+  const bar = el('<div class="row"></div>');
+  const posOptions = ['<option value="">all positions</option>']
+    .concat(S.config.positions.map((p) => `<option ${t.pos === p ? 'selected' : ''}>${p}</option>`)).join('');
+  bar.innerHTML = `
+    <span class="muted">${hint('horizon', 'horizons')}</span> ${horizonInputs()}
+    <span class="muted">decide on</span> <select class="hsort">${horizonOptions()}</select>
+    <span class="muted">${hint('free_transfers', 'free transfers')}</span>
+    <input id="tft" type="number" min="0" max="5" value="${t.freeTransfers}" style="width:56px">
+    <select id="tpos">${posOptions}</select>
+    <input id="tq" placeholder="search name" value="${esc(t.q)}" style="width:140px">
+    <label><input type="checkbox" id="tnet" ${t.onlyWorthHit ? 'checked' : ''}>
+      <span class="hint" title="Hides every transfer whose net gain is not positive — that is, the ones a hit would wipe out. With a free transfer in hand this changes nothing.">only worth taking</span></label>
+    <span class="spacer"></span>
+    <span class="muted" id="tcount"></span>`;
+  setTimeout(() => {
+    wireHorizons(bar);
+    bar.querySelector('#tpos').onchange = (e) => { t.pos = e.target.value; redrawTransfers(); };
+    bar.querySelector('#tq').oninput = (e) => { t.q = e.target.value; redrawTransfers(); };
+    bar.querySelector('#tnet').onchange = (e) => { t.onlyWorthHit = e.target.checked; redrawTransfers(); };
+    // Free transfers change the hit arithmetic on the server, so this is a refetch, not a resort.
+    bar.querySelector('#tft').onchange = (e) => {
+      t.freeTransfers = Math.max(0, Number(e.target.value) || 0);
+      render();
+    };
+  });
+  return bar;
+}
+
+function transferCols() {
+  const b = S.transfers.board;
+  const cols = [
+    ['rank', '#', 'rank'], ['web_name', 'Buy', 'web_name'], ['team', 'Club', 'team'],
+    ['position', 'Pos', 'position'], ['p_start', 'Start%', 'p_start'], ['price', '£', 'price'],
+  ];
+  b.horizons.forEach((h) => cols.push([`gain${h}`, `+${h} GW`, 'transfer_gain']));
+  cols.push([`net${b.sort_horizon}`, `net ${b.sort_horizon} GW`, 'transfer_net']);
+  cols.push(['out', 'Sell', 'transfer_out'], ['out_price', 'sell £', 'price'],
+            ['out_starts', 'sell starts', 'starts'], ['spare', 'Spare', 'transfer_spare']);
+  return cols;
+}
+
+const transferValue = (row, key) => {
+  if (key.startsWith('gain')) return row.gain[Number(key.slice(4))];
+  if (key.startsWith('net')) return row.net[Number(key.slice(3))];
+  if (key === 'out') return row.out.web_name;
+  if (key === 'out_price') return row.out.price;
+  if (key === 'out_starts') return row.out.starts[S.transfers.board.sort_horizon];
+  return row[key];
+};
+
+function transferTable() {
+  const wrap = el('<div class="tablewrap"><table><thead><tr></tr></thead><tbody id="trows"></tbody></table></div>');
+  const tr = wrap.querySelector('thead tr');
+  const b = S.transfers.board;
+  transferCols().forEach(([key, label, helpKey]) => {
+    const isSort = key === 'gain' + b.sort_horizon;
+    const th = el(`<th data-k="${key}" style="${isSort ? 'color:var(--accent)' : ''}">`
+      + hint(helpKey, label) + (S.transfers.sort === key ? (S.transfers.desc ? ' ▾' : ' ▴') : '') + '</th>');
+    th.onclick = () => {
+      const horizon = key.startsWith('gain') ? Number(key.slice(4)) : null;
+      if (horizon && horizon !== b.sort_horizon) {
+        // The player to sell is chosen at the deciding horizon, so changing it is a server
+        // question rather than a re-sort - exactly as on the waivers page.
+        S.sortHorizon = horizon;
+        render();
+        return;
+      }
+      if (S.transfers.sort === key) S.transfers.desc = !S.transfers.desc;
+      else { S.transfers.sort = key; S.transfers.desc = true; }
+      redrawTransfers();
+    };
+    tr.append(th);
+  });
+  setTimeout(redrawTransfers);
+  return wrap;
+}
+
+function redrawTransfers() {
+  const body = document.getElementById('trows');
+  if (!body) return;
+  const t = S.transfers;
+  const b = t.board;
+  const query = t.q.trim().toLowerCase();
+  const rows = b.candidates.filter((row) =>
+    (!t.pos || row.position === t.pos)
+    && (!t.onlyWorthHit || row.net[b.sort_horizon] > 0)
+    && (!query || row.web_name.toLowerCase().includes(query)));
+  if (t.sort !== 'rank') {
+    rows.sort((a, c) => {
+      const x = transferValue(a, t.sort), y = transferValue(c, t.sort);
+      if (typeof x === 'string') return t.desc ? y.localeCompare(x) : x.localeCompare(y);
+      return t.desc ? (y ?? -1e9) - (x ?? -1e9) : (x ?? 1e9) - (y ?? 1e9);
+    });
+  }
+  body.innerHTML = '';
+  rows.forEach((row) => {
+    const tr = el('<tr></tr>');
+    transferCols().forEach(([key]) => {
+      const td = document.createElement('td');
+      if (key === 'web_name') {
+        td.innerHTML = `<span class="name">${esc(row.web_name)}</span>${flagChips(row)}`;
+        td.querySelector('.name').onclick = () => openPlayer(row.player_id);
+      } else if (key === 'out') {
+        td.innerHTML = `<span class="name">${esc(row.out.web_name)}</span>`;
+        td.querySelector('.name').onclick = () => openPlayer(row.out.player_id);
+      } else if (key.startsWith('gain') || key.startsWith('net')) {
+        const value = transferValue(row, key);
+        td.textContent = signed(value);
+        td.className = value > 0.05 ? 'pos-good' : (value < -0.05 ? 'pos-bad' : 'muted');
+      } else if (key === 'p_start') {
+        td.textContent = pct(row.p_start);
+      } else if (key === 'out_starts') {
+        td.textContent = `${row.out.starts[b.sort_horizon]} of ${b.sort_horizon}`;
+      } else if (key === 'price' || key === 'out_price' || key === 'spare') {
+        td.textContent = n1(transferValue(row, key));
+      } else if (key === 'rank' || key === 'team' || key === 'position') {
+        td.textContent = row[key];
+      } else {
+        td.textContent = n1(transferValue(row, key));
+      }
+      tr.append(td);
+    });
+    body.append(tr);
+  });
+  const count = document.getElementById('tcount');
+  if (count) {
+    count.textContent = `${rows.length} shown of ${b.considered.improving} improving`
+      + ` · ${b.considered.scored} legal swaps priced`;
+  }
+}
+
+/* Your fifteen, so the sell side of every row above can be checked against the squad it comes
+   from. `starts` is the column that explains a near-zero gain: a player who never makes the XI
+   cannot be upgraded profitably. */
+
+function transferSquadTable() {
+  const b = S.transfers.board;
+  const wrap = el('<div class="tablewrap"><table><thead><tr>'
+    + '<th>Pos</th><th>Player</th><th>Club</th><th>£</th><th>Start%</th>'
+    + b.horizons.map((h) => `<th>pts ${h} GW</th>`).join('')
+    + `<th>${hint('starts', 'starts')}</th><th>Status</th>`
+    + '</tr></thead><tbody></tbody></table></div>');
+  const body = wrap.querySelector('tbody');
+  const order = { GKP: 0, DEF: 1, MID: 2, FWD: 3 };
+  [...b.squad.players]
+    .sort((a, c) => (order[a.position] - order[c.position])
+      || (c.points[b.sort_horizon] - a.points[b.sort_horizon]))
+    .forEach((row) => {
+      const tr = el('<tr></tr>');
+      tr.innerHTML = `<td>${row.position}</td>`
+        + `<td><span class="name">${esc(row.web_name)}</span>${flagChips(row)}</td>`
+        + `<td>${esc(row.team)}</td><td>${n1(row.price)}</td><td>${pct(row.p_start)}</td>`
+        + b.horizons.map((h) => `<td>${n1(row.points[h])}</td>`).join('')
+        + `<td>${row.starts[b.sort_horizon]} of ${b.sort_horizon}</td>`
+        + `<td class="muted">${esc(row.status_meaning)}</td>`;
+      tr.querySelector('.name').onclick = () => openPlayer(row.player_id);
+      body.append(tr);
+    });
+  return wrap;
+}
 
 function renderGlossary(main) {
   main.innerHTML = '';

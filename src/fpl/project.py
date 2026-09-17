@@ -6,6 +6,10 @@
     uv run -m src.fpl.project --gw-from 5 --gw-to 14   # a different horizon
     uv run -m src.fpl.project --list-methods
 
+The horizon defaults to ten gameweeks starting at the *next* one, so a run always projects what is
+still to come. `--gw-from` and `--gw-to` override either end; `--gw-from 1` reproduces the
+pre-season framing. See `_with_horizon` for why the start is not simply GW1.
+
 Reads only what is already on disk - no network. Fetch first if the snapshots are stale:
 
     uv run -m src.fpl.fetch
@@ -24,7 +28,7 @@ from datetime import datetime
 
 from src.fpl.loader.load import load_from_snapshots
 from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
-from src.fpl.loader.utils import Season
+from src.fpl.loader.utils import MAX_GAMEWEEK, Season, resolve_next_gameweek
 from src.fpl.projection.artifacts import (
     DEFAULT_KEEP,
     build_run,
@@ -116,6 +120,53 @@ def generate(
     return path
 
 
+def _with_horizon(
+    method: ProjectionMethod, gw_from: int | None, gw_to: int | None, season: str,
+) -> ProjectionMethod:
+    """Pin `method` to an explicit horizon, defaulting the start to the next gameweek.
+
+    The method registry carries `gameweek_from=1`, which was right in pre-season and silently
+    wrong from GW2 on: a run starting at GW1 sums gameweeks that have already been played, and
+    two model behaviours key off the start rather than the calendar - `played_gameweeks` in
+    `src/fpl/projection/engine.py` (which drives the `current_season_ramp`) and the role-evidence
+    window. Left at 1 in October, a run scores nine dead gameweeks, reports `played_gameweeks=0`
+    so the form ramp never engages, and reads role evidence as if no match had been played.
+
+    Defaults, both overridable:
+    - `gameweek_from`: `resolve_next_gameweek()`, so a run projects what is still to come.
+    - `gameweek_to`: a full horizon of the method's own length from the start, clamped to
+      `MAX_GAMEWEEK`. This keeps `--gw-from 30` a ten-gameweek run rather than an eleven-week
+      one, and stops a late-season run projecting fixtures that do not exist.
+
+    Before GW1 this is inert: the next gameweek is 1, so the horizon is the registry's GW1-10 and
+    every pre-season comparison keeps its meaning.
+
+    Parameters:
+    - method: the registry entry to pin. Its `horizon` sets the default length.
+    - gw_from, gw_to: the CLI overrides, or None to default.
+    - season: season whose fixtures decide the next gameweek.
+
+    Raises:
+    - SystemExit: when the resulting range is empty, naming both ends. A `gameweek_to` below
+      `gameweek_from` would otherwise project nothing and write an artifact that looks valid.
+    """
+    start = gw_from if gw_from is not None else resolve_next_gameweek(season)
+    end = gw_to if gw_to is not None else min(start + method.params.horizon - 1, MAX_GAMEWEEK)
+    if end < start:
+        raise SystemExit(
+            f"Empty horizon: --gw-to {end} is before --gw-from {start}. Pass a --gw-to of {start} "
+            f"or more."
+        )
+    if gw_from is None:
+        logger.info(
+            "No --gw-from given; projecting from GW%d, the next gameweek. Pass --gw-from to "
+            "override (--gw-from 1 reproduces a past run).", start,
+        )
+    return ProjectionMethod(
+        method.name, method.notes, method.params.replace(gameweek_from=start, gameweek_to=end),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--season', default=Season.CURRENT, help=f'Season directory. Default {Season.CURRENT}.')
@@ -125,8 +176,10 @@ def main() -> None:
                         help=f'Method name. Default {DEFAULT_METHOD}.')
     parser.add_argument('--draft-method', help='Override the method for the draft run only.')
     parser.add_argument('--fpl-method', help='Override the method for the FPL run only.')
-    parser.add_argument('--gw-from', type=int, help='First gameweek of the horizon.')
-    parser.add_argument('--gw-to', type=int, help='Last gameweek of the horizon.')
+    parser.add_argument('--gw-from', type=int,
+                        help='First gameweek of the horizon. Default: the next gameweek.')
+    parser.add_argument('--gw-to', type=int,
+                        help='Last gameweek of the horizon. Default: a full horizon from --gw-from.')
     parser.add_argument('--managers', type=int, default=DEFAULT_MANAGERS,
                         help=f'Managers in the draft league. Default {DEFAULT_MANAGERS}.')
     parser.add_argument('--keep', type=int, default=DEFAULT_KEEP,
@@ -143,18 +196,11 @@ def main() -> None:
 
     load_from_snapshots(args.season)
 
-    overrides = {}
-    if args.gw_from is not None:
-        overrides['gameweek_from'] = args.gw_from
-    if args.gw_to is not None:
-        overrides['gameweek_to'] = args.gw_to
-
     games = args.game or list(GAMES)
     per_game_method = {DRAFT: args.draft_method, 'fpl': args.fpl_method}
     for game in games:
         chosen = lookup_method(per_game_method.get(game) or args.method)
-        if overrides:
-            chosen = ProjectionMethod(chosen.name, chosen.notes, chosen.params.replace(**overrides))
+        chosen = _with_horizon(chosen, args.gw_from, args.gw_to, args.season)
         logger.info("Projecting %s with method %s over GW%d-%d",
                     game, chosen.name, chosen.params.gameweek_from, chosen.params.gameweek_to)
         generate(

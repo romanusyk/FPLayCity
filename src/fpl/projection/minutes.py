@@ -389,6 +389,37 @@ def transfer_role_multiplier(moved: bool, quality_ratio: float | None) -> float:
     return max(MIN_MOVE_MULTIPLIER, min(1.0, scaled))
 
 
+CURRENT_SEASON_FULL_MATCHES = 5.0
+"""Played gameweeks at which the recent-matches term fully replaces last season's start share.
+
+Not fitted, and it cannot be until a season has been played through with this code. It is a
+judgement, and the judgement is the obvious one: by five league matches, who a manager has
+actually been picking is better evidence of who he will pick than a start share from a squad that
+has since changed manager, sold two players and bought four. Before those matches exist the ramp
+is inert, so every constant fitted on pre-season alone still means what it meant.
+
+Chosen at five rather than three because a single rotation - a cup week, a knock, a red card -
+should not be able to rewrite a nailed starter's role, and at five one match is a fifth of the
+evidence rather than a third.
+"""
+
+
+def current_season_ramp(played_gameweeks: int, full_matches: float | None) -> float:
+    """How far the blend has moved from last season toward the matches just played.
+
+    0.0 before a ball is kicked and 1.0 once `full_matches` gameweeks are in the books, linear in
+    between. `None` disables it, which is the historical behaviour and the control.
+
+    Raises:
+    - ValueError: on a non-positive `full_matches`, which would divide by zero or invert the ramp.
+    """
+    if full_matches is None:
+        return 0.0
+    if full_matches <= 0:
+        raise ValueError(f"full_matches must be positive, got {full_matches}")
+    return min(1.0, max(0, played_gameweeks) / full_matches)
+
+
 def preseason_weight_for_prior(
     prior_share: float | None,
     knots: tuple[float, float, float] = PRESEASON_ROLE_KNOTS,
@@ -522,6 +553,8 @@ class MinutesModel:
         no_evidence_p_start: float = 0.0,
         trust_weight: float = PRESEASON_TRUST_WEIGHT,
         role_knots: tuple[float, float, float] | None = PRESEASON_ROLE_KNOTS,
+        played_gameweeks: int = 0,
+        current_season_full_matches: float | None = None,
     ):
         if not 0.0 <= preseason_weight <= 1.0:
             raise ValueError(f"preseason_weight must be in [0, 1], got {preseason_weight}")
@@ -534,8 +567,12 @@ class MinutesModel:
                 raise ValueError(f"every role knot must be in [0, 1], got {role_knots}")
         self._preseason_weight = preseason_weight
         self._no_evidence = no_evidence_p_start
+        if played_gameweeks < 0:
+            raise ValueError(f"played_gameweeks cannot be negative, got {played_gameweeks}")
         self._trust_weight = trust_weight
         self._role_knots = role_knots
+        self._played_gameweeks = played_gameweeks
+        self._current_ramp = current_season_ramp(played_gameweeks, current_season_full_matches)
 
     def estimate(
         self,
@@ -616,12 +653,21 @@ class MinutesModel:
           player's is a decision. `preseason_weight_for_prior` carries the fitted curve. It is
           skipped for movers, whose prior describes a squad they have left, and skipped entirely
           when `role_knots` is None so the flat weight can be run as a control.
+
+        Then one addition, applied last: **how much of the season has been played.** The curve
+        answers "what does *pre-season* tell you", and the honest answer for a nailed starter is
+        "not much - his absence is rest". That answer expires. Once real matches are in the
+        evidence window, the same 0.15 would still be giving last season's start share 85% of the
+        say in September, which is indefensible. `current_season_ramp` walks the weight to 1.0 over
+        `CURRENT_SEASON_FULL_MATCHES` gameweeks, so the recent window takes over as it earns the
+        right to. With no gameweeks played the ramp is 0 and this is exactly the fitted curve.
         """
         base = (
             self._preseason_weight
             if moved or self._role_knots is None
             else preseason_weight_for_prior(prior_share, self._role_knots)
         )
+        base = base + (1.0 - base) * self._current_ramp
         return base * min(1.0, team_weight / self._trust_weight)
 
     def _blend(

@@ -19,7 +19,6 @@ import asyncio
 import json
 import logging
 import os
-from enum import Enum
 from httpx import AsyncClient
 from src.fpl.loader.convert import (
     element_json_to_player,
@@ -35,7 +34,11 @@ from src.fpl.loader.baseline import (
     build_prior_season_baseline,
     load_prior_season_baseline,
     persist_prior_season_baseline,
+    top_up_prior_season_from_history,
 )
+from src.fpl.loader.draft_league import load_ownership as load_league_ownership
+from src.fpl.loader import fpl_squad
+from src.fpl.loader.http import BASE_DRAFT_URL, BASE_FPL_URL, fetch_json
 from src.fpl.loader.news.pl import list_saved_news
 from src.fpl.loader.news.validate import list_saved_facts
 from src.fpl.loader.store import JsonSnapshotStore, SnapshotSpec
@@ -57,29 +60,44 @@ from src.fpl.models.immutable import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BASE_FPL_URL = "https://fantasy.premierleague.com/api/"
-BASE_DRAFT_URL = "https://draft.premierleague.com/api/"
+def _fpl_entry() -> int | None:
+    """Our classic-FPL entry id, from `data/fpl_entry.json`, or None when none is connected.
+
+    Read from disk rather than from a constant. This used to be `FplManager.ME = 2486591`, written
+    into source in December 2025; checked against the live API on 2026-08-26 that entry belongs to
+    somebody else, and every presence filed under `is_mine=True` since then described a stranger's
+    squad without a murmur. Classic ids being permanent made it worse, not better: a stable wrong
+    answer never breaks loudly enough to be noticed. See `src/fpl/loader/fpl_squad.py`.
+
+    Returns None, loudly, when no team is connected - a legitimate state for a fresh checkout.
+    """
+    try:
+        return fpl_squad.load_config().entry_id
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning("Skipping classic-FPL manager picks: %s", exc)
+        return None
 
 
-class FplManager(Enum):
-    ME = 2486591
+def _draft_entries(season: str) -> list[tuple[int, bool]]:
+    """Entry ids in our draft league for `season`, each flagged as ours or not.
 
+    Read from `data/<season>/draft_league.json` and the league snapshot beside it, never from a
+    constant. Draft entry ids are re-issued every season: this used to be a hardcoded enum, and
+    the id that meant "us" in 2025/26 now serves a stranger's team, which `bootstrap()` would
+    have filed as our squad without a murmur.
 
-class DraftManager(Enum):
-    ME = 52242
-    YURII = 52193
-    DEVO = 52210
-    GEKA = 151167
-
-
-async def fetch_json(client: AsyncClient, url_path: str, base_url: str = BASE_FPL_URL, sleep_sec: float = 0.5) -> dict:
-    """Fetch JSON from the FPL API and throttle requests slightly."""
-    logging.info("Calling %s", url_path)
-    response = await client.get(url=base_url + url_path)
-    response.raise_for_status()
-    response_body = json.loads(response.content)
-    await asyncio.sleep(sleep_sec)
-    return response_body
+    Returns an empty list when no league is connected, logging what was skipped and how to fix
+    it. That is a legitimate state - a fresh checkout, or a season before the draft - and the
+    projection does not need presences at all; only the waivers screen does.
+    """
+    try:
+        ownership = load_league_ownership(season)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning(
+            "Skipping draft manager picks: %s", exc,
+        )
+        return []
+    return [(entry.entry_id, entry.is_mine) for entry in ownership.entries.values()]
 
 
 async def fetch_player_summaries(
@@ -114,6 +132,70 @@ async def fetch_player_summaries(
     return await aggregate_store.get_or_fetch(freshness, _fetch_aggregate)
 
 
+def _restore_or_build_prior_season(
+    season: str,
+    events: list[dict],
+    element_rows: list[dict],
+    player_summaries: dict[str, dict],
+    team_rows: list[dict],
+) -> None:
+    """Get last season's totals into `PlayerSeasons`, from the snapshot if there is one.
+
+    The reconciliation in `build_prior_season_baseline` only works **before the season's first
+    kickoff**: until then `bootstrap-static` carries each element's previous-season totals, so it
+    can be checked against `history_past`. Once a gameweek has been played those fields hold *this*
+    season's totals instead, and the check fails on every player who has kicked a ball - Raya read
+    as "90 minutes, 1 start" against last season's 3,330.
+
+    So: the persisted snapshot wins whenever it exists. It was captured before kickoff, which is
+    the only moment the two sources could be reconciled, and that is exactly why it is written.
+    Anyone registered *since* that capture is then topped up from `history_past`, which does not
+    rot - otherwise a mid-season signing with a real Premier League past would be projected as if
+    he had none.
+
+    Raises:
+    - ValueError: when there is no snapshot and the season has already started. Rebuilding from a
+      live in-season bootstrap cannot work, and the per-player reconciliation failure it produces
+      does not say so. `history_past` is still authoritative, so the fix is a real one - see
+      `docs/prediction_roadmap.md` - but it is not a thing to paper over here.
+    """
+    try:
+        load_prior_season_baseline(season)
+        added = top_up_prior_season_from_history(
+            element_rows=element_rows,
+            team_rows=team_rows,
+            season=season,
+            player_summaries=player_summaries,
+        )
+        if added:
+            logger.info(
+                "Prior-season baseline topped up from history_past for %d player(s) registered "
+                "after it was captured: %s", len(added), ', '.join(sorted(added)),
+            )
+            persist_prior_season_baseline(season)
+        return
+    except FileNotFoundError:
+        pass
+    if any(event.get('finished') for event in events):
+        played = [event['id'] for event in events if event.get('finished')]
+        raise ValueError(
+            f"No prior-season baseline snapshot for {season}, and gameweek(s) "
+            f"{played[0]}-{played[-1]} have already been played. `bootstrap-static` now carries "
+            f"*this* season's totals, so last season's cannot be reconciled from it any more - the "
+            f"capture had to happen before the first kickoff "
+            f"(./run.sh -m src.fpl.fetch --baseline-only). Restore "
+            f"data/{season}/prior_season/ from a backup, or accept a season with no prior-season "
+            f"evidence by building it from history_past alone."
+        )
+    build_prior_season_baseline(
+        element_rows=element_rows,
+        player_summaries=player_summaries,
+        team_rows=team_rows,
+        season=season,
+    ).log()
+    persist_prior_season_baseline(season)
+
+
 async def load(client: AsyncClient, next_gameweek: int, freshness: int = 1, season: str | None = None):
     season = season or Season.CURRENT
 
@@ -140,24 +222,26 @@ async def load(client: AsyncClient, next_gameweek: int, freshness: int = 1, seas
         freshness,
     )
 
-    for fpl_manager in FplManager:
+    fpl_entry = _fpl_entry()
+    if fpl_entry is not None:
         for gw in range(1, next_gameweek):
-            json_store = JsonSnapshotStore(
-                SnapshotSpec(base_path=f"data/{season}/fpl_managers/{fpl_manager.value}/picks/{gw}")
-            )
-            await json_store.get_or_fetch(
-                freshness if gw == next_gameweek - 1 else 1000,
-                lambda: fetch_json(client, f"entry/{fpl_manager.value}/event/{gw}/picks/", base_url=BASE_FPL_URL)
+            # Only the last played gameweek is re-fetched: an entry's picks for a finished
+            # gameweek never change again, so the older ones are read from disk.
+            await fpl_squad.fetch_picks(
+                client, fpl_entry, gw, season=season,
+                freshness=freshness if gw == next_gameweek - 1 else 1000,
             )
 
-    for draft_manager in DraftManager:
+    for entry_id, _ in _draft_entries(season):
         for gw in range(1, next_gameweek):
             json_store = JsonSnapshotStore(
-                SnapshotSpec(base_path=f"data/{season}/draft_managers/{draft_manager.value}/picks/{gw}")
+                SnapshotSpec(base_path=f"data/{season}/draft_managers/{entry_id}/picks/{gw}")
             )
             await json_store.get_or_fetch(
                 freshness if gw == next_gameweek - 1 else 1000,
-                lambda: fetch_json(client, f"entry/{draft_manager.value}/event/{gw}", base_url=BASE_DRAFT_URL)
+                lambda entry_id=entry_id, gw=gw: fetch_json(
+                    client, f"entry/{entry_id}/event/{gw}", base_url=BASE_DRAFT_URL
+                )
             )
 
 
@@ -261,6 +345,19 @@ def load_from_snapshots(season: str | None = None) -> None:
         Players.add(element_json_to_player(element))
 
     load_prior_season_baseline(season)
+    added = top_up_prior_season_from_history(
+        element_rows=bootstrap_body['elements'],
+        team_rows=bootstrap_body['teams'],
+        season=season,
+    )
+    if added:
+        # Not persisted here: this path is the read-only one, and a projection run rewriting a
+        # captured baseline as a side effect is exactly the kind of thing that makes an old run
+        # stop reproducing. `bootstrap()` persists it.
+        logger.info(
+            "Prior-season baseline topped up in memory from history_past for %d player(s) "
+            "registered after it was captured: %s", len(added), ', '.join(sorted(added)),
+        )
     logger.info(
         "Loaded %s from snapshots: %d teams, %d players, %d fixtures",
         season, len(Teams.items), len(Players.items), len(Fixtures.items),
@@ -316,13 +413,13 @@ async def bootstrap(client: AsyncClient, next_gameweek: int, season: str | None 
         Players.add(element_json_to_player(player))
 
     logger.info("Building prior-season baseline...")
-    build_prior_season_baseline(
+    _restore_or_build_prior_season(
+        season=season,
+        events=main_response_body['events'],
         element_rows=main_response_body['elements'],
         player_summaries=player_response_bodies,
         team_rows=main_response_body['teams'],
-        season=season,
-    ).log()
-    persist_prior_season_baseline(season)
+    )
 
     logger.info("Building player fixtures...")
     for player_id, row in player_response_bodies.items():
@@ -343,37 +440,38 @@ async def bootstrap(client: AsyncClient, next_gameweek: int, season: str | None 
         return
 
     logger.info("Building fpl presences...")
-    for fpl_manager in FplManager:
-        json_store = JsonSnapshotStore(
-            SnapshotSpec(base_path=f"data/{season}/fpl_managers/{fpl_manager.value}/picks/{next_gameweek - 1}")
-        )
-        squad = await json_store.get_or_fetch(
-            freshness,
-            lambda: fetch_json(client, f"entry/{fpl_manager.value}/event/{next_gameweek - 1}/picks/", base_url=BASE_FPL_URL)
+    fpl_entry = _fpl_entry()
+    if fpl_entry is not None:
+        squad = await fpl_squad.fetch_picks(
+            client, fpl_entry, next_gameweek - 1, season=season, freshness=freshness,
         )
         for presence in squad['picks']:
             PlayerPresences.add(fpl_presence_json_to_player_presence(
                 row=presence,
                 gameweek=next_gameweek - 1,
-                manager_id=fpl_manager.value,
-                is_mine=fpl_manager == FplManager.ME,
+                manager_id=fpl_entry,
+                # The only classic entry we track is our own. When none is connected we file
+                # nobody, rather than filing somebody else's fifteen as ours.
+                is_mine=True,
             ))
 
     logger.info("Building draft presences...")
-    for draft_manager in DraftManager:
+    for entry_id, is_mine in _draft_entries(season):
         json_store = JsonSnapshotStore(
-            SnapshotSpec(base_path=f"data/{season}/draft_managers/{draft_manager.value}/picks/{next_gameweek - 1}")
+            SnapshotSpec(base_path=f"data/{season}/draft_managers/{entry_id}/picks/{next_gameweek - 1}")
         )
         squad = await json_store.get_or_fetch(
             freshness,
-            lambda: fetch_json(client, f"entry/{draft_manager.value}/event/{next_gameweek - 1}", base_url=BASE_DRAFT_URL)
+            lambda entry_id=entry_id: fetch_json(
+                client, f"entry/{entry_id}/event/{next_gameweek - 1}", base_url=BASE_DRAFT_URL
+            )
         )
         for presence in squad['picks']:
             PlayerPresences.add(draft_presence_json_to_player_presence(
                 row=presence,
                 gameweek=next_gameweek - 1,
-                manager_id=draft_manager.value,
-                is_mine=draft_manager == DraftManager.ME,
+                manager_id=entry_id,
+                is_mine=is_mine,
             ))
     
     _load_news(season, next_gameweek)

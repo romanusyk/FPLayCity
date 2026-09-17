@@ -31,6 +31,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from src.fpl.loader.convert import (
+    prior_season_from_history,
     json_to_player_season,
     player_season_to_json,
     prior_season_to_player_season,
@@ -169,6 +170,87 @@ def build_prior_season_baseline(
             report.transferred.append(element_row["web_name"])
 
     return report
+
+
+def _stored_element_summary(season: str, element_row: dict) -> dict:
+    """Read one element's stored summary snapshot.
+
+    Raises:
+    - FileNotFoundError: with the command that fixes it. A player in the bootstrap with no stored
+      summary means the snapshots are half a fetch apart, and guessing his history would decide
+      whether he counts as having a Premier League past.
+    """
+    store = JsonSnapshotStore(SnapshotSpec(base_path=f"data/{season}/elements/{element_row['id']}"))
+    if store.find_latest() is None:
+        raise FileNotFoundError(
+            f"No stored element-summary for player {element_row['id']} "
+            f"({element_row['web_name']}), so whether he has a previous Premier League season "
+            f"cannot be established. Fetch it: ./run.sh -m src.fpl.fetch"
+        )
+    return store.load_latest()
+
+
+def top_up_prior_season_from_history(
+    element_rows: list[dict],
+    team_rows: list[dict],
+    season: str | None = None,
+    player_summaries: dict[str, dict] | None = None,
+) -> list[str]:
+    """Add prior-season rows for elements the stored baseline does not cover.
+
+    The baseline is captured once, before the season's first kickoff, because that is the only
+    moment `bootstrap-static` can be reconciled against `history_past`. Players registered after
+    that moment are therefore missing from it - and a missing row means "no Premier League
+    record", which for someone like Wan-Bissaka (element 611, registered after the 2026/27
+    capture, 2,080 minutes and 23 starts in 2025/26) is simply false. He would be projected from
+    position averages.
+
+    `history_past` does not rot, so it can supply those rows at any point in the season. What it
+    cannot supply is the bootstrap cross-check, and the rows say so:
+    `PriorSeasonSource.HISTORY_PAST_ONLY`.
+
+    Parameters:
+    - player_summaries: element id (as str) -> element-summary payload, when the caller already
+      holds them. Omitted by the offline path, which reads the stored snapshot of each *missing*
+      element instead - normally none or one file, never six hundred.
+
+    Returns:
+    - Names of the players added, so the caller can log them. Empty when the baseline is already
+      complete, which is the normal case.
+    """
+    season = season or Season.CURRENT
+    prior_season = Season.previous(season)
+    fpl_season_name = Season.as_fpl_history_name(prior_season)
+    prior_club_by_code = _prior_club_by_code(prior_season)
+    short_names = {team['id']: team['short_name'] for team in team_rows}
+    known = {row.player_id for row in PlayerSeasons.get_list(season=prior_season)}
+
+    added: list[str] = []
+    for element_row in element_rows:
+        if element_row["id"] in known:
+            continue
+        summary = (player_summaries or {}).get(str(element_row["id"]))
+        if summary is None:
+            summary = _stored_element_summary(season, element_row)
+        if "history_past" not in summary:
+            raise KeyError(
+                f"element-summary payload for player {element_row['id']} "
+                f"({element_row['web_name']}) has no 'history_past' key. The FPL response shape "
+                f"has changed."
+            )
+        player_season = prior_season_from_history(
+            element_row=element_row,
+            history_past_rows=summary["history_past"],
+            season=prior_season,
+            fpl_season_name=fpl_season_name,
+            team=short_names[element_row["team"]],
+            prior_team=prior_club_by_code.get(element_row["code"]),
+        )
+        if player_season is None:
+            continue
+        PlayerSeasons.add(player_season)
+        added.append(element_row["web_name"])
+    return added
 
 
 def persist_prior_season_baseline(season: str | None = None) -> str:

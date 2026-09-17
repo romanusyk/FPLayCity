@@ -37,6 +37,14 @@ def draft_run_id():
     return runs[0].run_id
 
 
+@pytest.fixture(scope='module')
+def fpl_run_id():
+    runs = artifacts.list_runs(Season.CURRENT, 'fpl')
+    if not runs:
+        pytest.skip('No fpl runs; generate one with: uv run -m src.fpl.project --game fpl')
+    return runs[0].run_id
+
+
 def test_index_is_served(client):
     response = client.get('/')
     assert response.status_code == 200
@@ -146,9 +154,16 @@ def test_a_run_records_what_it_priced_replacement_against(client, draft_run_id):
     assert body['valuation']['slots']['GKP'] == 1, 'starting slots, not roster slots'
 
 
-def test_board_defaults_to_the_newest_run(client, draft_run_id):
+def test_board_defaults_to_the_newest_run_of_the_default_method(client, draft_run_id):
+    """Newest *of the default method*: a control run must not hijack the default board."""
+    config = client.get('/api/config').json()
+    runs = client.get('/api/runs', params={'game': 'draft'}).json()['runs']
+    expected = next(
+        (run['run_id'] for run in runs if run['method'] == config['default_method']),
+        draft_run_id,
+    )
     body = client.get('/api/board?game=draft').json()
-    assert body['run']['run_id'] == draft_run_id
+    assert body['run']['run_id'] == expected
 
 
 def test_unknown_run_id_is_a_404_not_an_empty_board(client):
@@ -230,3 +245,221 @@ def test_calibration_says_so_when_nothing_has_resolved(client, draft_run_id):
     else:
         assert body['components']['p_start']['model'] is not None
         assert body['components']['p_start']['baseline'] is not None
+
+
+def test_config_advertises_the_waiver_limits(client):
+    body = client.get('/api/config').json()['waivers']
+    assert body['horizon_limit'] == 10
+    assert len(body['default_horizons']) == len(set(body['default_horizons'])) <= body['max_horizons']
+
+
+def test_a_horizon_past_the_projection_is_a_400_whatever_the_league_state(client):
+    response = client.get('/api/waivers', params={'horizons': '1,3,12'})
+    assert response.status_code == 400
+    assert '1-10' in response.json()['detail']
+
+
+def test_waivers_either_serves_a_board_or_says_how_to_connect_a_league(client, draft_run_id):
+    """Both outcomes are correct states; an empty table would not be."""
+    response = client.get('/api/waivers', params={'run_id': draft_run_id, 'horizons': '1,3,5'})
+    if response.status_code == 409:
+        assert 'src.fpl.league' in response.json()['detail']
+        return
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['horizons'] == [1, 3, 5] and body['sort_horizon'] == 3
+    assert len(body['squad']['players']) == 15
+    for row in body['candidates']:
+        assert row['out']['position'] == row['position'], 'waivers are like-for-like'
+        assert row['claimable'] is True
+
+
+def test_the_default_run_is_the_default_method_not_merely_the_newest(client):
+    """A freshly generated control must not become the board every page load opens on."""
+    config = client.get('/api/config').json()
+    default_method = config['default_method']
+    runs = client.get('/api/runs', params={'game': 'draft'}).json()['runs']
+    if not any(run['method'] == default_method for run in runs):
+        pytest.skip(f'No {default_method} draft run stored')
+    served = client.get('/api/board', params={'game': 'draft'}).json()['run']
+    assert served['method']['name'] == default_method
+
+
+def test_waivers_lists_the_whole_pool_alongside_the_ranked_claims(client, draft_run_id):
+    """The browsing view. Never truncated - `limit` applies to claims only."""
+    response = client.get('/api/waivers',
+                          params={'run_id': draft_run_id, 'horizons': '1,3,5', 'limit': 5})
+    if response.status_code == 409:
+        pytest.skip('No draft league connected')
+    body = response.json()
+    run = artifacts.load_run(Season.CURRENT, 'draft', draft_run_id)
+    assert len(body['candidates']) == 5
+    assert len(body['players']) == len(run['players'])
+    kinds = {row['owner_kind'] for row in body['players']}
+    assert kinds <= {'mine', 'rival', 'free', 'locked', 'unknown'}
+    assert sum(1 for row in body['players'] if row['owner_kind'] == 'mine') == 15
+    for row in body['players']:
+        assert set(row['points']) == {'1', '3', '5'}
+
+
+def test_transfers_either_serve_a_board_or_say_how_to_connect_a_team(client, fpl_run_id):
+    """Both outcomes are correct states; an empty table would not be."""
+    response = client.get('/api/transfers', params={'run_id': fpl_run_id, 'horizons': '1,3,5'})
+    if response.status_code == 409:
+        assert 'src.fpl.squad' in response.json()['detail']
+        return
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['horizons'] == [1, 3, 5] and body['sort_horizon'] == 3
+    assert len(body['squad']['players']) == 15
+    assert body['budget']['selling_price_basis'] == 'current_price'
+    owned = {row['player_id'] for row in body['squad']['players']}
+    seen = set()
+    for row in body['candidates']:
+        assert row['out']['position'] == row['position'], 'a classic squad keeps its 2/5/5/3 shape'
+        assert row['player_id'] not in owned, 'you cannot buy a player you already own'
+        assert row['out']['player_id'] in owned, 'you can only sell your own'
+        assert row['player_id'] not in seen, 'one row per incoming player'
+        seen.add(row['player_id'])
+        assert row['gain'][str(body['sort_horizon'])] > 0
+
+
+def test_a_hit_moves_net_and_leaves_gain_alone(client, fpl_run_id):
+    """The hit is the difference between "an improvement" and "worth doing"."""
+    params = {'run_id': fpl_run_id, 'horizons': '1,3,5'}
+    free = client.get('/api/transfers', params=dict(params, free_transfers=1))
+    if free.status_code == 409:
+        pytest.skip('No classic-FPL team connected')
+    paid = client.get('/api/transfers', params=dict(params, free_transfers=0))
+    assert free.status_code == paid.status_code == 200
+    free_body, paid_body = free.json(), paid.json()
+    if not free_body['candidates']:
+        pytest.skip('No improving transfer to price')
+    a, b = free_body['candidates'][0], paid_body['candidates'][0]
+    assert a['player_id'] == b['player_id'] and a['gain'] == b['gain']
+    for horizon, value in a['net'].items():
+        assert b['net'][horizon] == pytest.approx(value - free_body['hit_cost'])
+
+
+def test_a_transfer_horizon_past_the_projection_is_a_400(client):
+    response = client.get('/api/transfers', params={'horizons': '1,3,12'})
+    assert response.status_code == 400
+    assert '1-10' in response.json()['detail']
+
+
+def test_the_fpl_board_carries_points_at_every_requested_horizon(client):
+    """The same three horizons as the waivers page, on the classic board."""
+    if not artifacts.list_runs(Season.CURRENT, 'fpl'):
+        pytest.skip('No fpl runs')
+    body = client.get('/api/board', params={'game': 'fpl', 'horizons': '1,3,5'}).json()
+    assert body['horizons'] == [1, 3, 5] and body['sort_horizon'] == 3
+    assert len(body['gameweeks']) == 5
+    assert body['gameweeks'][0] == body['run']['gameweek_from']
+
+    run = artifacts.load_run(Season.CURRENT, 'fpl', body['run']['run_id'])
+    stored = {row['player_id']: row for row in run['players']}
+    for row in body['players'][:20]:
+        fixtures = stored[row['player_id']]['fixtures']
+        for horizon in (1, 3, 5):
+            window = body['gameweeks'][:horizon]
+            expected = sum(f['points'] for f in fixtures if f['gameweek'] in window)
+            assert row['horizon_points'][str(horizon)] == pytest.approx(expected, abs=0.01)
+        assert row['horizon_points']['5'] <= row['points'] + 0.01, 'a horizon is part of the run'
+        assert row['horizon_per_gameweek']['3'] == pytest.approx(
+            row['horizon_points']['3'] / 3, abs=0.01)
+
+
+def test_the_fpl_board_ranks_on_the_deciding_horizon(client):
+    """Rank and the column you are deciding on must never disagree - that is how a board lies."""
+    if not artifacts.list_runs(Season.CURRENT, 'fpl'):
+        pytest.skip('No fpl runs')
+    for horizon in (1, 5):
+        body = client.get('/api/board', params={
+            'game': 'fpl', 'horizons': '1,3,5', 'sort_horizon': horizon}).json()
+        assert body['sort_horizon'] == horizon
+        points = [row['horizon_points'][str(horizon)] for row in body['players']]
+        assert points == sorted(points, reverse=True)
+        assert [row['rank'] for row in body['players'][:5]] == [1, 2, 3, 4, 5]
+
+
+def test_the_draft_board_keeps_ranking_on_vorp(client, draft_run_id):
+    """VORP is priced over the whole run, so a horizon must not silently reorder the draft board."""
+    body = client.get('/api/board',
+                      params={'game': 'draft', 'run_id': draft_run_id, 'horizons': '1,3'}).json()
+    assert body['horizons'] == [1, 3]
+    vorp = [row['vorp'] for row in body['players']]
+    assert vorp == sorted(vorp, reverse=True)
+
+
+def test_a_board_horizon_past_the_run_is_a_400(client, draft_run_id):
+    run = artifacts.load_run(Season.CURRENT, 'draft', draft_run_id)
+    too_long = run['gameweek_to'] - run['gameweek_from'] + 2
+    if too_long > 10:
+        pytest.skip('This run is already as long as the horizon limit allows')
+    response = client.get('/api/board', params={
+        'game': 'draft', 'run_id': draft_run_id, 'horizons': str(too_long)})
+    assert response.status_code == 400
+    assert 'src.fpl.project' in response.json()['detail'], 'say how to fix it'
+
+
+def test_config_reports_the_connected_fpl_team_or_that_there_is_none(client):
+    """Both are correct states. What must not happen is a squad appearing from nowhere."""
+    entry = client.get('/api/config').json()['fpl_entry']
+    if entry is None:
+        return
+    assert entry['entry_id'] and entry['entry_name'], 'a connected team is named, not just numbered'
+    if entry['squad'] is None:
+        assert 'src.fpl.squad' in entry['note'], 'say how to fetch the picks'
+        return
+    assert len(entry['squad']['picks']) == 15
+    assert entry['squad']['gameweek'] >= 1
+
+
+def test_the_fpl_board_tags_our_squad_or_tags_nobody(client):
+    """The squad filter's whole input. Every row carries the key, so absent never means 'mine'."""
+    if not artifacts.list_runs(Season.CURRENT, 'fpl'):
+        pytest.skip('No fpl runs')
+    body = client.get('/api/board', params={'game': 'fpl', 'horizons': '1,3'}).json()
+    assert all('squad' in row for row in body['players']), 'explicitly None, never absent'
+    squad = body['squad']
+    if squad is None:
+        assert all(row['squad'] is None for row in body['players'])
+        return
+
+    mine = [row for row in body['players'] if row['squad']]
+    assert len(mine) == squad['size'] - len(squad['missing'])
+    assert sum(1 for row in mine if row['squad']['is_bench']) <= 4
+    assert sum(1 for row in mine if row['squad']['is_captain']) <= 1
+    slots = sorted(row['squad']['slot'] for row in mine)
+    assert len(set(slots)) == len(slots), 'two players cannot share a slot'
+    if squad['points'] is not None:
+        # The best legal XI, so eleven players' worth - never all fifteen, never one player's.
+        assert squad['points']['1'] > 0
+        assert squad['points']['3'] >= squad['points']['1']
+
+
+def test_the_draft_board_has_no_fpl_squad_block(client, draft_run_id):
+    """Different game, different squad. The classic fifteen must not leak onto the draft board."""
+    body = client.get('/api/board', params={'game': 'draft', 'run_id': draft_run_id}).json()
+    assert body['squad'] is None
+    assert all('squad' not in row for row in body['players'])
+
+
+def test_player_history_carries_what_happened_in_each_match(client, draft_run_id):
+    """The panel's game log: enough per match to see why a projection looks the way it does."""
+    board = client.get('/api/board', params={'game': 'draft', 'run_id': draft_run_id}).json()
+    player_id = board['players'][0]['player_id']
+    body = client.get('/api/player',
+                      params={'player_id': player_id, 'game': 'draft', 'run_id': draft_run_id}).json()
+    if not body['history']:
+        pytest.skip('No stored match history for the top player')
+    for match in body['history']:
+        assert {'minutes', 'points', 'goals_conceded', 'defensive_actions', 'bonus',
+                'team_score', 'opponent_score'} <= set(match)
+        # A scoreline is attached only where the fixture id can be trusted: fixture ids are
+        # season-scoped, so last season's would resolve against this season's fixture list.
+        if match['season'] != Season.CURRENT:
+            assert match['team_score'] is None
+    current = [m for m in body['history'] if m['season'] == Season.CURRENT]
+    for match in current:
+        assert match['team_score'] is not None, 'a finished match this season has a score'
