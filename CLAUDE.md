@@ -149,6 +149,20 @@ details that bite: the text has no year, and a season spans August to May so eac
 a return twelve months out. And the boundary is the first gameweek whose **deadline** is on or after
 the date, so a player back on the 19th has missed a gameweek that kicked off on the 18th.
 
+**Absence is not evidence of a lost place, and the return-date fix was worthless without this.**
+Reading a return date restores a player's *availability* and then multiplies it by his `role_share` -
+which, once `current_season_ramp` has run its course, is dominated by recent starts. A player
+injured for a month has started none of them, so his role reads 0.0 and the return date buys him
+nothing. Mitoma, GW6 2026/27: `role_share` 0.00 against a prior-season 0.50, projected 2.5 points
+over ten gameweeks while fit for all of them. `MinutesEstimate.returning_role_share` credits a
+returning player the **better** of his current role and his prior-season start share - the prior
+season being the last window in which he was actually available. Mitoma 2.5 -> 18.5, Jensen
+11.8 -> 25.1; Foden and Pau unchanged because their current role already exceeds last season's, and
+Goretzka unchanged because his prior share is 0.0 and nothing is invented. It applies only to a
+player with a published return date, so Saliba ("Unknown return date", 0.79 prior) stays suppressed.
+The case it gets wrong is a player who genuinely lost his place while fit; that is bounded by last
+season rather than guessed at. Not fitted.
+
 **The projection was opponent-aware in one direction only, and the exponent it used was wrong.**
 Fixtures ahead were adjusted per opponent and venue; the rates being multiplied were raw per-90
 numbers taken at face value however easy the schedule that produced them. `opponent.py` divides each

@@ -134,6 +134,43 @@ class TestMinutesAtGameweek:
             return_window=ReturnWindow(8, date(2026, 10, 19), False), return_role_share=0.5)
         assert got.at_gameweek(8).p_start == pytest.approx(0.4)
 
+    def test_a_returning_player_is_not_credited_a_zero_role(self):
+        """The bug that made the return date worthless for injured players.
+
+        Once the current-season ramp dominates the blend, a player injured for a month has started
+        none of the recent matches and his role reads 0.0. Restoring availability then multiplies
+        by zero. Mitoma, GW6 2026/27: role_share 0.00 against a prior-season 0.50, projected 2.5
+        points over ten gameweeks while being fit for all of them.
+        """
+        got = self.estimate(
+            role_share=0.0, prior_start_share=0.5, status='i',
+            news='Hamstring injury - Expected back 10 Oct',
+            return_window=ReturnWindow(6, date(2026, 10, 10), False),
+        )
+        assert got.at_gameweek(5).p_start == 0.0
+        assert got.at_gameweek(6).p_start == pytest.approx(0.5)
+
+    def test_a_grown_role_is_kept_rather_than_replaced(self):
+        """Taking the max, not the prior: a player whose role grew keeps the growth."""
+        got = self.estimate(
+            role_share=0.65, prior_start_share=0.60,
+            return_window=ReturnWindow(7, date(2026, 10, 17), True))
+        assert got.at_gameweek(7).p_start == pytest.approx(0.65)
+
+    def test_no_prior_season_means_no_fallback(self):
+        """A player with no Premier League record has nothing to fall back to, and is not invented."""
+        got = self.estimate(
+            role_share=0.0, prior_start_share=None,
+            return_window=ReturnWindow(6, date(2026, 10, 10), False))
+        assert got.at_gameweek(6).p_start == 0.0
+
+    def test_an_unknown_return_gets_no_role_restored_either(self):
+        """Saliba: "Unknown return date" with a 0.79 prior must stay suppressed, not come back."""
+        got = self.estimate(
+            role_share=0.0, prior_start_share=0.79, status='i',
+            news='Back injury - Unknown return date')
+        assert got.at_gameweek(14).p_start == 0.0
+
     def test_an_available_player_is_untouched(self):
         got = self.estimate(status='a', news='', p_start=0.8, availability=1.0)
         assert got.at_gameweek(9) is got, 'no window means the same object, not a copy'

@@ -478,6 +478,30 @@ class MinutesEstimate:
     """Share of his normal role credited from the return gameweek on. 1.0 says a returning player
     walks straight back into the side - right for a ban, optimistic for an injury, and not fitted."""
 
+    @property
+    def returning_role_share(self) -> float:
+        """The role to credit a player from the gameweek he is back.
+
+        Not simply `role_share`, and that distinction is load-bearing. Once the
+        `current_season_ramp` has run its course the blend is dominated by recent starts, and a
+        player who has been injured for a month has started none of them - so his role reads 0.0.
+        That is absence being mistaken for a lost place: you cannot infer a role from matches he
+        was not available for. Mitoma, GW6 2026/27, read `role_share` 0.0 against a prior-season
+        0.5, which made the return date worth nothing at all because the model restored his
+        availability and then multiplied it by a zero role.
+
+        So a returning player is credited with the better of his current role and his prior-season
+        start share. The prior season is the last window in which he was actually available, which
+        makes it the honest fallback; taking the *max* means a player whose role genuinely grew
+        keeps the growth. A player who really did lose his place while fit is the case this gets
+        wrong, and it is bounded by last season rather than invented.
+
+        Not fitted. It only ever applies to a player with a published return date.
+        """
+        if self.prior_start_share is None:
+            return self.role_share
+        return max(self.role_share, self.prior_start_share)
+
     def at_gameweek(self, gameweek: int) -> 'MinutesEstimate':
         """This estimate as it applies to one gameweek.
 
@@ -488,10 +512,12 @@ class MinutesEstimate:
         """
         if not self.return_window.known or gameweek < self.return_window.gameweek:
             return self
+        role = self.returning_role_share
         return replace(
             self,
             availability=self.return_role_share,
-            p_start=self.role_share * self.return_role_share,
+            role_share=role,
+            p_start=role * self.return_role_share,
         )
 
     @property

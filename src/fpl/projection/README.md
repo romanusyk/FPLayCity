@@ -148,6 +148,13 @@ does not know, and suppressing the horizon is the right answer. Suspensions and 
 separate switches because the evidence differs in kind — a ban is a fixed number of matches and the
 player is fit at the end of it, while "expected back" is a medical estimate that slips.
 
+Restoring availability is not enough on its own. By the time the current-season ramp dominates the
+blend, a player injured for a month has started none of the recent matches, so his `role_share`
+reads 0.0 and the return date buys him nothing — Mitoma projected 2.5 points over ten gameweeks
+while fit for all of them. `MinutesEstimate.returning_role_share` credits the better of his current
+role and his prior-season start share, the prior season being the last window in which he was
+available. It applies only where a return date was published.
+
 ### Opponent strength runs in both directions
 
 The projection used to be opponent-aware only going forward. Each fixture got a
