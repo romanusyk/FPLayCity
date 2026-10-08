@@ -392,7 +392,7 @@ class ProjectionEngine:
             transfer_multiplier=self._transfer_multiplier(player, prior_season),
             moved=bool(prior_season and prior_season.is_new_club),
             return_window=self._return_window(player),
-            return_role_share=self.params.status_return_role_share,
+            return_ramp=self.params.status_return_ramp,
         )
         exposure = self._exposure_for(player.player_id)
         rates = self.rate_model.estimate(

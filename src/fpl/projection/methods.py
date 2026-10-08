@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
 
+from src.fpl.projection.availability import STATUS_RETURN_RAMP
 from src.fpl.projection.defensive import (
     DEFAULT_ACTIONS_SHRINKAGE_MINUTES,
     DEFAULT_SHRINKAGE_STARTS,
@@ -117,12 +118,12 @@ class ProjectionParams:
     medical timeline, and a returning player may not walk back into the side - which is why it is a
     separate switch from the suspension one.
     """
-    status_return_role_share: float = 1.0
-    """Share of his normal role a player is credited with from the return gameweek on.
+    status_return_ramp: tuple[float, ...] = ()
+    """Share of his former role a returning player holds in each gameweek back, then full.
 
-    1.0 says he walks straight back in. Right for a ban; optimistic for an injury. **Not fitted** -
-    one season holds too few long absences - so it is a judgement, and the two switches above let
-    the injury case be turned off entirely rather than discounted by a guessed number.
+    Empty credits him the whole role immediately, which is what this started as and is wrong by
+    about half: measured over 147 absence spells, a returning player starts the first match back at
+    0.5 of his previous rate. See `STATUS_RETURN_RAMP` in `src/fpl/projection/availability.py`.
     """
     adjust_history_for_opponent: bool = False
     """Divide each measured rate by the opponent strength it was earned against.
@@ -169,14 +170,17 @@ class ProjectionParams:
     def as_dict(self) -> dict:
         """JSON-ready parameters.
 
-        `preseason_role_knots` is widened to a list: a run artifact is compared field by field
-        against the in-memory body it was written from, and a tuple that comes back as a list
-        breaks that equality for no reason anyone would enjoy debugging.
+        Every tuple is widened to a list. A run artifact is compared field by field against the
+        in-memory body it was written from, and JSON has no tuples, so one that comes back as a
+        list breaks that equality for no reason anyone would enjoy debugging. This was a named
+        special case for `preseason_role_knots` until `status_return_ramp` arrived and broke the
+        round-trip the same way; doing it by type means the next tuple parameter costs nobody an
+        afternoon.
         """
-        params = asdict(self)
-        if params['preseason_role_knots'] is not None:
-            params['preseason_role_knots'] = list(params['preseason_role_knots'])
-        return params
+        return {
+            name: list(value) if isinstance(value, tuple) else value
+            for name, value in asdict(self).items()
+        }
 
 
 @dataclass(frozen=True)
@@ -360,6 +364,27 @@ METHODS: dict[str, ProjectionMethod] = {
             dc_actions_shrinkage_minutes=OPPONENT_DC_ACTIONS_MINUTES,
             honour_suspension_return=True,
             honour_injury_return=True,
+            status_return_ramp=STATUS_RETURN_RAMP,
+        ),
+    ),
+    'v5-status-flat-return': ProjectionMethod(
+        name='v5-status-flat-return',
+        notes=(
+            'Control for the return ramp: a returning player is credited his whole former role '
+            'from the day he is available, which is what v5-status-duration did before the ramp '
+            'was measured. Wrong by about half in the first match back - 147 absence spells put it '
+            'at 0.5 of the previous start rate - so this exists to score the ramp against, not to '
+            'be used. One parameter from v5-status-duration.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+            adjust_history_for_opponent=True,
+            opponent_elasticity_forward=True,
+            dc_actions_shrinkage_minutes=OPPONENT_DC_ACTIONS_MINUTES,
+            honour_suspension_return=True,
+            honour_injury_return=True,
         ),
     ),
     'v5-suspension-duration': ProjectionMethod(
@@ -377,6 +402,7 @@ METHODS: dict[str, ProjectionMethod] = {
             opponent_elasticity_forward=True,
             dc_actions_shrinkage_minutes=OPPONENT_DC_ACTIONS_MINUTES,
             honour_suspension_return=True,
+            status_return_ramp=STATUS_RETURN_RAMP,
         ),
     ),
     'v5-injury-duration': ProjectionMethod(
@@ -395,6 +421,7 @@ METHODS: dict[str, ProjectionMethod] = {
             opponent_elasticity_forward=True,
             dc_actions_shrinkage_minutes=OPPONENT_DC_ACTIONS_MINUTES,
             honour_injury_return=True,
+            status_return_ramp=STATUS_RETURN_RAMP,
         ),
     ),
     'v5-opponent-history': ProjectionMethod(

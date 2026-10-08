@@ -128,11 +128,33 @@ class TestMinutesAtGameweek:
         assert got.at_gameweek(5).p_start == 0.0
         assert got.at_gameweek(14).p_start == 0.0
 
-    def test_a_discounted_return_credits_less_than_a_full_role(self):
-        """A player back from a long injury need not walk straight back into the side."""
+    def test_the_ramp_is_applied_by_gameweeks_since_the_return(self):
+        """Measured: a returning player starts the first match back at about half his old rate."""
         got = self.estimate(
-            return_window=ReturnWindow(8, date(2026, 10, 19), False), return_role_share=0.5)
-        assert got.at_gameweek(8).p_start == pytest.approx(0.4)
+            role_share=0.8, return_window=ReturnWindow(8, date(2026, 10, 19), False),
+            return_ramp=(0.55, 0.70, 0.75))
+        assert got.at_gameweek(7).p_start == 0.0, 'still out'
+        assert got.at_gameweek(8).p_start == pytest.approx(0.8 * 0.55)
+        assert got.at_gameweek(9).p_start == pytest.approx(0.8 * 0.70)
+        assert got.at_gameweek(10).p_start == pytest.approx(0.8 * 0.75)
+
+    def test_past_the_ramp_he_is_back_to_full(self):
+        got = self.estimate(
+            role_share=0.8, return_window=ReturnWindow(8, date(2026, 10, 19), False),
+            return_ramp=(0.55, 0.70, 0.75))
+        assert got.at_gameweek(11).p_start == pytest.approx(0.8)
+
+    def test_an_empty_ramp_is_the_old_flat_behaviour(self):
+        """`v5-status-flat-return` is the control, so it has to stay reachable."""
+        got = self.estimate(
+            role_share=0.8, return_window=ReturnWindow(8, date(2026, 10, 19), False))
+        assert got.at_gameweek(8).p_start == pytest.approx(0.8)
+
+    def test_the_ramp_never_applies_without_a_return_date(self):
+        got = self.estimate(
+            role_share=0.8, news='Back injury - Unknown return date',
+            return_ramp=(0.55, 0.70))
+        assert got.at_gameweek(9).p_start == 0.0
 
     def test_a_returning_player_is_not_credited_a_zero_role(self):
         """The bug that made the return date worthless for injured players.

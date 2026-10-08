@@ -474,9 +474,12 @@ class MinutesEstimate:
     return_window: ReturnWindow = UNKNOWN_RETURN
     """When FPL says this player is back. `UNKNOWN_RETURN` means no date was published, which is
     the only state that existed before `src/fpl/projection/availability.py`."""
-    return_role_share: float = 1.0
-    """Share of his normal role credited from the return gameweek on. 1.0 says a returning player
-    walks straight back into the side - right for a ban, optimistic for an injury, and not fitted."""
+    return_ramp: tuple[float, ...] = ()
+    """Share of his former role in each of the first gameweeks back, then full.
+
+    Empty means the flat behaviour: full role from the return gameweek. Measured, that is wrong by
+    about half in the first match - see `STATUS_RETURN_RAMP` in
+    `src/fpl/projection/availability.py`."""
 
     @property
     def returning_role_share(self) -> float:
@@ -513,12 +516,28 @@ class MinutesEstimate:
         if not self.return_window.known or gameweek < self.return_window.gameweek:
             return self
         role = self.returning_role_share
+        share = self.return_share_at(gameweek)
         return replace(
             self,
-            availability=self.return_role_share,
+            availability=share,
             role_share=role,
-            p_start=role * self.return_role_share,
+            p_start=role * share,
         )
+
+    def return_share_at(self, gameweek: int) -> float:
+        """How much of his former role this player holds in `gameweek`, having just come back.
+
+        Indexed by gameweeks since the return, so the first match back gets the first ramp value
+        and anything past the ramp is full. An empty ramp is the flat 1.0 this started as.
+        """
+        if not self.return_ramp or not self.return_window.known:
+            return 1.0
+        index = gameweek - self.return_window.gameweek
+        if index < 0:
+            return 0.0
+        if index >= len(self.return_ramp):
+            return 1.0
+        return self.return_ramp[index]
 
     @property
     def p_sixty_plus(self) -> float:
@@ -633,7 +652,7 @@ class MinutesModel:
         transfer_multiplier: float = 1.0,
         moved: bool = False,
         return_window: ReturnWindow | None = None,
-        return_role_share: float = 1.0,
+        return_ramp: tuple[float, ...] = (),
     ) -> MinutesEstimate:
         """Build an estimate for one player.
 
@@ -641,7 +660,7 @@ class MinutesModel:
         - return_window: when FPL says a flagged player is back, from
           `src/fpl/projection/availability.py`. None keeps the status applied to the whole horizon,
           which is what every method before v5 did.
-        - return_role_share: share of his normal role credited from the return gameweek.
+        - return_ramp: share of his former role in each gameweek back. Empty is full role at once.
         - prior_season: last season's totals, or None for a player with no Premier League
           record. None is meaningful and is not replaced with zeros.
         - history: per-match rows, used for this player's own minutes and cameo rates.
@@ -675,7 +694,7 @@ class MinutesModel:
             role_share=role_share,
             availability=availability,
             return_window=window,
-            return_role_share=return_role_share,
+            return_ramp=return_ramp,
             status=player.status,
             news=player.news or '',
             prior_start_share=prior_share,

@@ -149,6 +149,19 @@ details that bite: the text has no year, and a season spans August to May so eac
 a return twelve months out. And the boundary is the first gameweek whose **deadline** is on or after
 the date, so a player back on the 19th has missed a gameweek that kicked off on the 18th.
 
+**A returning player does not walk straight back in, and 1.0 was wrong by about half.**
+`status_return_role_share` started at 1.0 as a stated judgement. Measured over **147 absence spells**
+across 2025/26 and 2026/27 (2026-10-08) - consecutive gameweeks with no minutes, bounded by
+appearances, for a player starting at least half the matches beforehand - the share of his previous
+start rate he actually has in the first match back is **about 0.5**, consistent across every spell
+length (2 GW 0.46, 3-4 0.55, 5-8 0.51, 9+ 0.61), recovering into 0.7-0.85 over the next month. The
+effect is as strong for a two-gameweek absence as for a long one, so this is **not** an
+injury-fitness story - it is what happens when somebody else has been playing, which is why the ramp
+applies to suspensions too. `STATUS_RETURN_RAMP` is (0.55, 0.70, 0.75, 0.80, 0.85) then full,
+smoothed monotonic because the raw series wobbles on 10-54 spells per bucket; only the first value is
+firmly measured. `v5-status-flat-return` pins the old 1.0 as the control. Worth 2-3 points per
+returning player on a GW6-15 run.
+
 **Absence is not evidence of a lost place, and the return-date fix was worthless without this.**
 Reading a return date restores a player's *availability* and then multiplies it by his `role_share` -
 which, once `current_season_ramp` has run its course, is dominated by recent starts. A player

@@ -31,13 +31,29 @@ the rest to the closing one. The date is then mapped to the first gameweek whose
 or after it, which is deliberately the conservative reading - a player back on the 19th has missed a
 gameweek whose deadline was the 17th.
 
-What this does not claim
-------------------------
-That a player returns to his previous role on the day he is available. For a suspension that is
-close to certain; for an injury it is optimistic, and a returning player often starts on the bench.
-`status_return_role_share` exists to discount that and is **not fitted** - one season carries too few
-long absences to fit it - so the default is 1.0 and `v5-injury-duration` isolates the injury half
-from the suspension half.
+A returning player does not walk straight back in, and that is measured
+------------------------------------------------------------------------
+The first version of this module credited a returning player his full former role from the day he
+was available, flagged as a stated judgement. It was wrong by about half. Measured over 147 absence
+spells across 2025/26 and 2026/27 (2026-10-08) - a spell being consecutive gameweeks with no
+minutes, bounded by appearances, for a player starting at least half the matches beforehand - the
+share of his previous start rate he actually has, by match back:
+
+    spell length    n     m1     m2     m3     m4     m5
+    2 gameweeks    54   0.46   0.58   0.63   0.70   0.56
+    3-4            38   0.55   0.67   0.73   0.66   0.68
+    5-8            45   0.51   0.82   0.79   0.69   0.85
+    9+             10   0.61   0.49   0.61   0.24   0.54
+
+The first match back is the well-measured point and it is consistent across every bucket: **about
+half**. After that it recovers into the 0.7-0.85 range, noisily. Notably the effect is just as
+strong for two-gameweek absences as for long ones, so this is not an injury-fitness story - it is
+what happens when somebody else has been playing.
+
+`STATUS_RETURN_RAMP` is that curve, smoothed monotonic because the raw series is noisy on 10-54
+spells per bucket, and returning to full from the sixth match back. Only the first value is firmly
+measured; the rest is a shape fitted to a trend. `v5-status-flat-return` pins it back to the old
+flat 1.0 so the ramp can be scored against it.
 """
 from __future__ import annotations
 
@@ -63,6 +79,14 @@ MONTHS = {
     'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
     'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
 }
+
+STATUS_RETURN_RAMP: tuple[float, ...] = (0.55, 0.70, 0.75, 0.80, 0.85)
+"""Share of his former role a player holds in each of the first matches back, then 1.0.
+
+Fitted 2026-10-08 on 147 absence spells; see the module doc. Smoothed monotonic, because the raw
+series wobbles on small per-bucket samples and a non-monotonic ramp would be fitting noise. The
+first value is the one the data actually pins down.
+"""
 
 SEASON_OPENS_FROM_MONTH = 7
 """Months from July belong to the season's opening year; January to June to its closing year."""

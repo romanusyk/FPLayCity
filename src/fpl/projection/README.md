@@ -148,6 +148,12 @@ does not know, and suppressing the horizon is the right answer. Suspensions and 
 separate switches because the evidence differs in kind — a ban is a fixed number of matches and the
 player is fit at the end of it, while "expected back" is a medical estimate that slips.
 
+A returning player is also ramped back rather than restored whole. Measured over 147 absence
+spells, he starts the first match back at about **half** his previous rate, recovering to 0.7–0.85
+over the following month — and just as strongly after a two-gameweek absence as a long one, so this
+is about somebody else having been playing rather than about fitness. `STATUS_RETURN_RAMP` carries
+that curve.
+
 Restoring availability is not enough on its own. By the time the current-season ramp dominates the
 blend, a player injured for a month has started none of the recent matches, so his `role_share`
 reads 0.0 and the return date buys him nothing — Mitoma projected 2.5 points over ten gameweeks
@@ -217,6 +223,7 @@ place this is decided, and `tests/test_project_horizon.py` pins it.
 |---|---|
 | `v5-status-duration` | **The default from GW6 2026/27.** Everything in `v5-opponent-adjusted`, plus reading how long a flagged player is actually out from FPL's own news text instead of suppressing the whole horizon. |
 | `v5-suspension-duration` | Only bans get a return date — the strongest case. |
+| `v5-status-flat-return` | Control: a returning player gets his whole former role at once, the pre-ramp behaviour. |
 | `v5-injury-duration` | Only injuries get a return date — a medical estimate, so weaker. |
 | `v5-opponent-adjusted` | **The default for GW5 2026/27.** Opponent-aware in both directions: measured rates are divided by the opponents they were earned against, fixture multipliers are applied at each metric's fitted elasticity rather than at full strength, and defensive actions are shrunk toward the position mean. |
 | `v5-opponent-history` | Only the backward half: rates normalised, fixtures still projected at full strength. |
