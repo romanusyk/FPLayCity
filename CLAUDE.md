@@ -134,6 +134,50 @@ is not monotonic in it — clubs with 3–4 stored pre-season matches predict GW
 Cuts error 21% on clubs with 1–2 matches at no aggregate cost. An earlier `n/(n+k)` attempt on
 match count made things worse and was correctly rejected — for the wrong reason.
 
+**`status` is a flag about *now*, and applying it to a whole horizon is a 25-point error.**
+`_availability` turned FPL's status into one multiplier used for every fixture, so a two-match ban
+cost a player the entire run. Foden, GW5-14 on 2026-09-17: suspended for GW5 and GW6, projected
+`p_start` 0.00 and ~7 points across ten gameweeks against a true figure in the low thirties, with a
+waiver board recommending his sale off the back of it. The duration is **published in plain text**
+and needs no language model - `bootstrap-static` carries `Suspended until 19 Oct`,
+`Expected back 10 Oct` (29 players dated on 2026-10-08) alongside `Unknown return date` (48) and
+`75% chance of playing` (41). `src/fpl/projection/availability.py` parses the first two and
+`MinutesEstimate.at_gameweek` ends the suppression there; everything else keeps the old behaviour,
+because "unknown" is a real statement and whole-horizon suppression is the right answer to it. Two
+details that bite: the text has no year, and a season spans August to May so each month occurs once
+- months from July belong to the opening year, the rest to the closing one, and anything looser puts
+a return twelve months out. And the boundary is the first gameweek whose **deadline** is on or after
+the date, so a player back on the 19th has missed a gameweek that kicked off on the 18th.
+
+**The projection was opponent-aware in one direction only, and the exponent it used was wrong.**
+Fixtures ahead were adjusted per opponent and venue; the rates being multiplied were raw per-90
+numbers taken at face value however easy the schedule that produced them. `opponent.py` divides each
+measured rate by the opponent strength it was earned against. The bigger finding was the exponent:
+the engine multiplied xG by the *full* opponent multiplier, which assumes output is exactly
+proportional to how weak the defence is. Measured over 5,087 starts across 2025/26 and 2026/27
+(2026-09-17), the elasticities are xG **0.58** DEF / **0.51** MID / **-0.11** FWD, xA 0.31/0.28/0.13,
+bonus 0.83/0.51/0.93, DC 0.10/0.23/0.11, saves 0.28 GKP. So a midfielder's xG responds at half the
+assumed rate and **a forward's xG does not respond at all** - a striker's chances come from his own
+team creating them, and his projection is now flat across fixtures. Negative values are clamped to
+zero: a negative exponent would make a striker better against better defences.
+
+**Defensive actions barely move with the opponent, and the coarse cut that says otherwise is a
+threshold artefact.** DC elasticity is 0.10 for defenders - nearly nothing - yet the *hit rate*
+against the 10-action threshold goes from 20% to 31% between weak and strong attacks on the same
+data. Both are true, because a tail probability amplifies a small shift in the mean. Adjust
+`actions_per_90` and re-apply the threshold through `implied_hit_rate`; never adjust a hit rate
+directly.
+
+**A four-start defensive sample was believed outright, and the obvious fix makes it worse.**
+`RateModel` has shrunk xG and xA toward a position average since the beginning; defensive actions,
+which feed a threshold, had no equivalent. Muharemović's 12.5 actions per 90 off **4 starts** implied
+a 0.80 hit rate and put him top of a GW5 waiver board. `dc_actions_shrinkage_minutes` (450, five
+matches, same prior as the rates) pulls that to 9.87 and the board to third; a 29-start sample moves
+7.10 -> 7.20, which is the point. Raising `dc_shrinkage_starts` instead - the *hit-rate* prior -
+sounds like the same fix and is not: it shrinks the observed rate toward the **implied** one, and the
+implied one is computed from the same four starts, so his estimate went 0.777 -> 0.786, the wrong
+way. `v5-dc-shrinkage` is kept as a method purely to record that.
+
 **VORP is not supposed to move when a star is drafted, and that is the commonest "bug" report
 about it.** Taking the best forward removes one player from the pool *and* one pick from those
 still to come, so the player who will be taken last is unchanged and replacement level holds.

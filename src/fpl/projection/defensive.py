@@ -36,13 +36,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from src.fpl.models.immutable import PlayerType
-from src.fpl.projection import poisson
+from src.fpl.projection import opponent as opponent_module, poisson
 from src.fpl.projection.history import PlayerHistory
+from src.fpl.projection.opponent import OpponentExposure
 from src.fpl.projection.scoring import (
     DEFENSIVE_CONTRIBUTION_POINTS,
     defensive_contribution_threshold,
 )
 
+
+DEFAULT_ACTIONS_SHRINKAGE_MINUTES = 0.0
+"""Prior weight, in minutes, pulling a player's actions-per-90 toward his position's average.
+
+0.0 is the historical behaviour: no shrinkage at all. That was an asymmetry rather than a decision -
+`RateModel` has shrunk xG and xA toward a position average since the beginning, while defensive
+actions, which feed a *threshold*, were taken raw however short the sample. Four starts at 12.5
+actions produced an implied hit rate of 0.80 and put a defender with one month of Premier League
+football on top of a waiver board.
+
+`v5` sets this to 450.0, the same five-match prior `rate_shrinkage_minutes` uses, so the two kinds
+of evidence are finally treated alike. Not fitted; `v5-dc-actions-shrinkage` is its control.
+"""
 
 DEFAULT_SHRINKAGE_STARTS = 5.0
 """Prior weight `k`, expressed in starts, for shrinking the observed hit rate.
@@ -89,6 +103,32 @@ class DefensiveEstimate:
     implied_hit_rate: float
     hit_rate: float
     shrinkage_weight: float
+    actions_per_90_shrunk: float = 0.0
+    """Actions per 90 after shrinking toward the position average, which is what
+    `implied_hit_rate` is computed from. Equal to `actions_per_90` when the shrinkage is off."""
+    actions_per_90_neutral: float = 0.0
+    """Actions per 90 with the opponents faced divided out, so a fixture multiplier can scale
+    them back up. Equal to `actions_per_90` when no opponent adjustment is in force."""
+
+    def hit_rate_at(self, pressure: float) -> float:
+        """The hit rate in a fixture whose opponent pressure is `pressure` (1.0 = average).
+
+        The blended rate is scaled by how much the *implied* rate moves at that opponent, so the
+        observed-vs-implied blend is preserved rather than recomputed. Returns `hit_rate`
+        unchanged when there is nothing to scale, which keeps every pre-v5 method identical.
+
+        A threshold crossing is why this is not just a linear scale of the rate: a 4% shift in
+        mean actions moves the probability of clearing 10 of them by considerably more, and
+        `implied_hit_rate` is where that non-linearity lives.
+        """
+        if pressure == 1.0 or self.threshold == 0 or not self.actions_per_90_neutral:
+            return self.hit_rate
+        base = implied_hit_rate(self.threshold, self.actions_per_90_neutral, self.minutes_per_start)
+        if base <= 0.0:
+            return self.hit_rate
+        scaled = implied_hit_rate(
+            self.threshold, self.actions_per_90_neutral * pressure, self.minutes_per_start)
+        return max(0.0, min(1.0, self.hit_rate * scaled / base))
 
     @property
     def points_per_start(self) -> float:
@@ -112,6 +152,8 @@ class DefensiveEstimate:
             ),
             'implied_hit_rate': round(self.implied_hit_rate, 3),
             'hit_rate': round(self.hit_rate, 3),
+            'actions_per_90_shrunk': round(self.actions_per_90_shrunk, 2),
+            'actions_per_90_neutral': round(self.actions_per_90_neutral, 2),
             'shrinkage_weight': round(self.shrinkage_weight, 3),
         }
 
@@ -130,18 +172,42 @@ class DefensiveContributionModel:
         self,
         shrinkage_starts: float = DEFAULT_SHRINKAGE_STARTS,
         assumed_minutes_per_start: float = 80.0,
+        actions_shrinkage_minutes: float = DEFAULT_ACTIONS_SHRINKAGE_MINUTES,
+        position_actions: dict[PlayerType, float] | None = None,
     ):
         if shrinkage_starts < 0:
             raise ValueError(f"shrinkage_starts must be >= 0, got {shrinkage_starts}")
+        if actions_shrinkage_minutes < 0:
+            raise ValueError(
+                f"actions_shrinkage_minutes must be >= 0, got {actions_shrinkage_minutes}")
+        if actions_shrinkage_minutes and not position_actions:
+            raise ValueError(
+                "actions_shrinkage_minutes is set but no position averages were supplied, so "
+                "there is nothing to shrink toward. Pass `position_actions`, which "
+                "`ProjectionEngine` builds from the same histories the estimates come from."
+            )
         self._k = shrinkage_starts
         self._assumed_minutes = assumed_minutes_per_start
+        self._actions_prior = actions_shrinkage_minutes
+        self._position_actions = position_actions or {}
 
-    def estimate(self, position: PlayerType, history: PlayerHistory) -> DefensiveEstimate:
+    def estimate(
+        self,
+        position: PlayerType,
+        history: PlayerHistory,
+        exposure: OpponentExposure | None = None,
+    ) -> DefensiveEstimate:
         """Build an estimate from every start on record.
 
         A player with no starts gets `hit_rate` 0.0 with `starts=0`. That is not a claim that
         they never clear the threshold - it is the absence of evidence, and callers show the
         sample size alongside the number so the difference is visible.
+
+        Parameters:
+        - exposure: the average opponent these starts were played against. When given,
+          `actions_per_90_neutral` divides that opponent pressure out at the fitted elasticity, so
+          a defender who racked up actions against the division's best attacks is not credited with
+          them in an average fixture. None leaves the neutral rate equal to the measured one.
         """
         threshold = defensive_contribution_threshold(position)
         starts = [match for match in history.starts() if match.minutes > 0]
@@ -161,6 +227,8 @@ class DefensiveContributionModel:
                 implied_hit_rate=0.0,
                 hit_rate=0.0,
                 shrinkage_weight=0.0,
+                actions_per_90_shrunk=0.0,
+                actions_per_90_neutral=0.0,
             )
 
         total_actions = sum(match.defensive_contribution for match in starts)
@@ -171,7 +239,17 @@ class DefensiveContributionModel:
         actions_per_90 = total_actions / total_minutes * 90.0
         minutes_per_start = total_minutes / len(starts)
 
-        implied = implied_hit_rate(threshold, actions_per_90, minutes_per_start)
+        # Shrink toward the position average before the threshold is applied. A short sample of
+        # a high actions rate otherwise implies a hit rate the player has not earned, and because
+        # `implied_hit_rate` is a tail probability the error is amplified rather than averaged out.
+        actions_for_implied = actions_per_90
+        if self._actions_prior and position in self._position_actions:
+            share = total_minutes / (total_minutes + self._actions_prior)
+            actions_for_implied = (
+                share * actions_per_90 + (1.0 - share) * self._position_actions[position]
+            )
+
+        implied = implied_hit_rate(threshold, actions_for_implied, minutes_per_start)
         observed = hits / len(starts) if len(starts) >= MIN_STARTS_FOR_OBSERVED_RATE else None
 
         if observed is None:
@@ -182,6 +260,11 @@ class DefensiveContributionModel:
             weight = len(starts) / (len(starts) + self._k)
             hit_rate = weight * observed + (1.0 - weight) * implied
 
+        neutral = actions_for_implied if exposure is None else opponent_module.normalise(
+            actions_for_implied,
+            exposure.pressure_side,
+            opponent_module.OPPONENT_ELASTICITY['dc'][position],
+        )
         return DefensiveEstimate(
             position=position,
             threshold=threshold,
@@ -194,4 +277,6 @@ class DefensiveContributionModel:
             implied_hit_rate=implied,
             hit_rate=hit_rate,
             shrinkage_weight=weight,
+            actions_per_90_shrunk=actions_for_implied,
+            actions_per_90_neutral=neutral,
         )

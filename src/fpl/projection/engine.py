@@ -26,6 +26,7 @@ simplification and a bug.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 from src.fotmob.models.fotmob import MatchKind
@@ -40,6 +41,7 @@ from src.fpl.models.immutable import (
 from src.fpl.projection import poisson
 from src.fpl.projection.defensive import DefensiveContributionModel, DefensiveEstimate
 from src.fpl.projection.history import PlayerHistory, build_player_histories
+from src.fpl.projection import availability as availability_module, opponent as opponent_module
 from src.fpl.projection.methods import ProjectionParams
 from src.fpl.projection.minutes import (
     MinutesEstimate,
@@ -54,6 +56,7 @@ from src.fpl.projection.scoring import (
     ASSIST_POINTS,
     CLEAN_SHEET_POINTS,
     DEFENSIVE_CONTRIBUTION_POINTS,
+    DEFENSIVE_CONTRIBUTION_THRESHOLD,
     GOAL_POINTS,
     GOALS_CONCEDED_PER_POINT,
     MatchScore,
@@ -112,6 +115,9 @@ class PlayerProjection:
     defensive: DefensiveEstimate
     prior_season: PlayerSeason | None
     flags: list[str] = field(default_factory=list)
+    exposure: opponent_module.OpponentExposure | None = None
+    """The average opponent this player's record was earned against, when a method asked for the
+    adjustment. None when it did not, which is what keeps every pre-v5 artifact byte-identical."""
 
     @property
     def total(self) -> MatchScore:
@@ -148,6 +154,7 @@ class PlayerProjection:
                 'minutes': self.minutes.as_dict(),
                 'rates': self.rates.as_dict(),
                 'defensive_contribution': self.defensive.as_dict(),
+                **({'opponent_exposure': self.exposure.as_dict()} if self.exposure else {}),
             },
             'prior_season': _prior_season_summary(self.prior_season),
             'fixtures': [fixture.as_dict() for fixture in self.fixtures],
@@ -192,6 +199,11 @@ class ProjectionEngine:
             params.team_shrinkage_matches,
             current_prior_matches=params.strength_current_prior_matches,
         )
+        self._deadlines = {
+            gameweek.gameweek: gameweek.deadline_time for gameweek in Query.all_gameweeks()
+            if gameweek.deadline_time is not None
+        }
+        self.exposures = self._build_exposures()
         self.rate_model = RateModel(
             Query.player_seasons_by_season(self.evidence_season),
             params.rate_shrinkage_minutes,
@@ -205,7 +217,13 @@ class ProjectionEngine:
             played_gameweeks=max(0, params.gameweek_from - 1),
             current_season_full_matches=params.current_season_full_matches,
         )
-        self.defensive_model = DefensiveContributionModel(params.dc_shrinkage_starts)
+        self.defensive_model = DefensiveContributionModel(
+            params.dc_shrinkage_starts,
+            actions_shrinkage_minutes=params.dc_actions_shrinkage_minutes,
+            position_actions=(
+                self._position_actions() if params.dc_actions_shrinkage_minutes else None
+            ),
+        )
         self.preseason = (
             build_preseason_roles(
                 self.season,
@@ -242,6 +260,127 @@ class ProjectionEngine:
         )
         return projections
 
+    def _return_window(self, player: Player) -> availability_module.ReturnWindow:
+        """When FPL says this player is back, if a method asked and FPL said.
+
+        The two switches are separate because the evidence is: a ban is a known number of matches,
+        an injury return is a medical estimate. A method may honour one and not the other, and
+        `v5-suspension-duration` / `v5-injury-duration` are exactly that pair.
+        """
+        window = availability_module.return_window(
+            player.news or '', self.season, self._deadlines)
+        if not window.known:
+            return availability_module.UNKNOWN
+        wanted = (
+            self.params.honour_suspension_return if window.is_suspension
+            else self.params.honour_injury_return
+        )
+        return window if wanted else availability_module.UNKNOWN
+
+    def _position_actions(self) -> dict[PlayerType, float]:
+        """Mean defensive actions per 90 by position, over every stored start.
+
+        The target `DefensiveContributionModel` shrinks a short sample toward. Built here rather
+        than in that module because a `MatchRow` carries no position - the player does.
+
+        Raises:
+        - ValueError: when a position with a threshold has no starts on record at all. Shrinking
+          toward a missing average would quietly pull every player in that position to zero.
+        """
+        totals: dict[PlayerType, list[float]] = {}
+        for player_id, history in self.histories.items():
+            try:
+                position = Query.player(player_id).player_type
+            except Exception:
+                continue
+            for match in history.starts():
+                if match.minutes <= 0:
+                    continue
+                bucket = totals.setdefault(position, [0.0, 0.0])
+                bucket[0] += match.defensive_contribution
+                bucket[1] += match.minutes
+        averages = {
+            position: actions / minutes * 90.0
+            for position, (actions, minutes) in totals.items() if minutes
+        }
+        # Only positions that can actually earn the award need an average. `PlayerType.MNG` has
+        # no declared threshold at all, and asking for one raises by design.
+        missing = [
+            position for position, threshold in DEFENSIVE_CONTRIBUTION_THRESHOLD.items()
+            if threshold and position not in averages
+        ]
+        if missing:
+            raise ValueError(
+                f"No stored starts for {[p.name for p in missing]}, so their mean defensive "
+                f"actions cannot be measured and nothing can be shrunk toward it. Fetch per-match "
+                f"history first: ./run.sh -m src.fpl.fetch"
+            )
+        logger.info(
+            "Mean defensive actions per 90: %s",
+            {position.name: round(value, 2) for position, value in sorted(
+                averages.items(), key=lambda item: item[0].value)},
+        )
+        return averages
+
+    def _build_exposures(self) -> dict[int, opponent_module.OpponentExposure]:
+        """Mean opponent faced per player, or nothing when the adjustment is switched off.
+
+        Ratings are built per season because an opponent must be rated as it was *that* year -
+        `short_name` is the stable key, but a club relegated since has no rating in the current
+        table at all. A season whose ratings cannot be built contributes nothing and says so,
+        rather than being silently rated at 1.0.
+        """
+        if not self.params.adjust_history_for_opponent:
+            return {}
+        seasons = {match.season for history in self.histories.values() for match in history.matches}
+        ratings_by_season: dict[str, dict] = {}
+        for season in sorted(seasons):
+            if season == self.season:
+                ratings_by_season[season] = self.strength.ratings
+                continue
+            try:
+                ratings_by_season[season] = TeamStrength(
+                    season, self.params.team_shrinkage_matches).ratings
+            except Exception as exc:
+                logger.warning(
+                    "No club ratings for %s, so its matches do not contribute to opponent "
+                    "exposure: %s", season, exc,
+                )
+        exposures = opponent_module.build_exposures(
+            self.histories, ratings_by_season, self.strength.home_advantage)
+        adjusted = sum(1 for e in exposures.values() if e.matches)
+        logger.info(
+            "Opponent exposure built for %d player(s) from %s; %d have match evidence.",
+            len(exposures), ', '.join(sorted(ratings_by_season)) or 'no season', adjusted,
+        )
+        return exposures
+
+    def _opponent_pressure(self, opponent: str, at_home: bool) -> float:
+        """How dangerous this fixture's opponent is, venue included. 1.0 is an average fixture.
+
+        The mirror of `attack_multiplier`: their attack rather than their defence, and the venue
+        term inverts because playing away means defending more.
+        """
+        venue = math.sqrt(self.strength.home_advantage)
+        return self.strength.rating(opponent).attack / (venue if at_home else 1.0 / venue)
+
+    def _exposure_for(self, player_id: int) -> opponent_module.OpponentExposure | None:
+        """The player's exposure, or None when no method asked for the adjustment."""
+        if not self.params.adjust_history_for_opponent:
+            return None
+        return self.exposures.get(player_id, opponent_module.NEUTRAL)
+
+    def _opponent_scale(self, metric: str, position: PlayerType, multiplier: float) -> float:
+        """A fixture multiplier at the strength this metric actually responds at.
+
+        Returns the multiplier unchanged unless `opponent_elasticity_forward` is on, so every
+        pre-v5 method keeps full-strength multiplication.
+        """
+        if not self.params.opponent_elasticity_forward:
+            return multiplier
+        return opponent_module.apply(
+            multiplier, opponent_module.OPPONENT_ELASTICITY[metric][position])
+
     def project(self, player: Player) -> PlayerProjection:
         """Project one player over the configured horizon."""
         history = self.histories.get(player.player_id) or PlayerHistory(player.player_id, player.code)
@@ -252,17 +391,24 @@ class ProjectionEngine:
             player, prior_season, history, preseason,
             transfer_multiplier=self._transfer_multiplier(player, prior_season),
             moved=bool(prior_season and prior_season.is_new_club),
+            return_window=self._return_window(player),
+            return_role_share=self.params.status_return_role_share,
         )
+        exposure = self._exposure_for(player.player_id)
         rates = self.rate_model.estimate(
             player.player_type,
             prior_season,
             club_attack=self.strength.rating(player.team.short_name).attack,
+            exposure=exposure,
         )
-        defensive = self.defensive_model.estimate(player.player_type, history)
+        defensive = self.defensive_model.estimate(player.player_type, history, exposure=exposure)
 
         flags, club_change = self._flags(player, prior_season, minutes, history)
         fixtures = [
-            self._project_fixture(player, minutes, rates, defensive, team_fixture, club_change)
+            self._project_fixture(
+                player, minutes.at_gameweek(team_fixture.gameweek),
+                rates, defensive, team_fixture, club_change,
+            )
             for team_fixture in self._horizon_fixtures(player.team_id)
         ]
         return PlayerProjection(
@@ -278,6 +424,7 @@ class ProjectionEngine:
             defensive=defensive,
             prior_season=prior_season,
             flags=flags,
+            exposure=exposure,
         )
 
     def _transfer_multiplier(self, player: Player, prior_season: PlayerSeason | None) -> float:
@@ -354,6 +501,16 @@ class ProjectionEngine:
         attack = self.strength.attack_multiplier(opponent, at_home) * club_change
         nineties = minutes.expected_minutes / 90.0
         clean_sheet = self.strength.clean_sheet_probability(team, opponent, at_home)
+        # Each attacking metric responds to the opponent at its own measured strength, so the
+        # multiplier is raised to that elasticity rather than applied whole. `club_change` is a
+        # separate correction and is never exponentiated.
+        raw_attack = self.strength.attack_multiplier(opponent, at_home)
+        attack_for = {
+            metric: self._opponent_scale(metric, position, raw_attack) * club_change
+            for metric in ('xg', 'xa', 'bonus')
+        }
+        # How much work the opponent creates: their attack, harder away from home.
+        pressure = self._opponent_pressure(opponent, at_home)
 
         conceded_divisor = GOALS_CONCEDED_PER_POINT.get(position)
         concession = 0.0
@@ -367,15 +524,20 @@ class ProjectionEngine:
                 minutes.p_sixty_plus * APPEARANCE_POINTS_FULL
                 + (minutes.p_appear - minutes.p_sixty_plus) * APPEARANCE_POINTS_PARTIAL
             ),
-            goals=rates.xg * nineties * attack * GOAL_POINTS[position],
-            assists=rates.xa * nineties * attack * ASSIST_POINTS,
+            goals=rates.xg * nineties * attack_for['xg'] * GOAL_POINTS[position],
+            assists=rates.xa * nineties * attack_for['xa'] * ASSIST_POINTS,
             clean_sheets=minutes.p_sixty_plus * clean_sheet * CLEAN_SHEET_POINTS[position],
             goals_conceded=concession,
-            saves=poisson.expected_floor_div(rates.saves * nineties, SAVES_PER_POINT),
-            defensive_contribution=(
-                minutes.p_start * defensive.hit_rate * DEFENSIVE_CONTRIBUTION_POINTS
+            saves=poisson.expected_floor_div(
+                rates.saves * nineties * self._opponent_scale('saves', position, pressure),
+                SAVES_PER_POINT,
             ),
-            bonus=rates.bonus * nineties,
+            defensive_contribution=(
+                minutes.p_start
+                * defensive.hit_rate_at(self._opponent_scale('dc', position, pressure))
+                * DEFENSIVE_CONTRIBUTION_POINTS
+            ),
+            bonus=rates.bonus * nineties * attack_for['bonus'],
             cards=(
                 rates.yellow * nineties * YELLOW_CARD_POINTS
                 + rates.red * nineties * RED_CARD_POINTS

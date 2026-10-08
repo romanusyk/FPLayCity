@@ -236,9 +236,10 @@ Components
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from src.fpl.models.immutable import Player, PlayerSeason, PlayerType
+from src.fpl.projection.availability import UNKNOWN as UNKNOWN_RETURN, ReturnWindow
 from src.fpl.projection.history import PlayerHistory
 from src.fpl.projection.preseason import PreseasonRole
 
@@ -470,6 +471,28 @@ class MinutesEstimate:
     cameo_rate: float
     cameo_minutes: float
     sample_starts: int
+    return_window: ReturnWindow = UNKNOWN_RETURN
+    """When FPL says this player is back. `UNKNOWN_RETURN` means no date was published, which is
+    the only state that existed before `src/fpl/projection/availability.py`."""
+    return_role_share: float = 1.0
+    """Share of his normal role credited from the return gameweek on. 1.0 says a returning player
+    walks straight back into the side - right for a ban, optimistic for an injury, and not fitted."""
+
+    def at_gameweek(self, gameweek: int) -> 'MinutesEstimate':
+        """This estimate as it applies to one gameweek.
+
+        A suspension or an injury with a published return suppresses the gameweeks before it and
+        nothing after: `status` is a flag about *now*, and applying it to a whole horizon cost a
+        two-match ban ten gameweeks of points. Returns `self` unchanged when no return date is
+        known, so a player FPL cannot put a date on keeps the conservative treatment.
+        """
+        if not self.return_window.known or gameweek < self.return_window.gameweek:
+            return self
+        return replace(
+            self,
+            availability=self.return_role_share,
+            p_start=self.role_share * self.return_role_share,
+        )
 
     @property
     def p_sixty_plus(self) -> float:
@@ -516,6 +539,7 @@ class MinutesEstimate:
             'status': self.status,
             'status_meaning': self.status_meaning,
             'news': self.news,
+            **self.return_window.as_dict(),
             'prior_start_share': (
                 round(self.prior_start_share, 3) if self.prior_start_share is not None else None
             ),
@@ -582,10 +606,16 @@ class MinutesModel:
         preseason: PreseasonRole | None,
         transfer_multiplier: float = 1.0,
         moved: bool = False,
+        return_window: ReturnWindow | None = None,
+        return_role_share: float = 1.0,
     ) -> MinutesEstimate:
         """Build an estimate for one player.
 
         Parameters:
+        - return_window: when FPL says a flagged player is back, from
+          `src/fpl/projection/availability.py`. None keeps the status applied to the whole horizon,
+          which is what every method before v5 did.
+        - return_role_share: share of his normal role credited from the return gameweek.
         - prior_season: last season's totals, or None for a player with no Premier League
           record. None is meaningful and is not replaced with zeros.
         - history: per-match rows, used for this player's own minutes and cameo rates.
@@ -610,6 +640,7 @@ class MinutesModel:
 
         role_share = self._blend(discounted_prior, preseason_share, preseason_weight)
         availability = self._availability(player)
+        window = return_window or UNKNOWN_RETURN
 
         starts = history.starts()
         return MinutesEstimate(
@@ -617,6 +648,8 @@ class MinutesModel:
             p_start=role_share * availability,
             role_share=role_share,
             availability=availability,
+            return_window=window,
+            return_role_share=return_role_share,
             status=player.status,
             news=player.news or '',
             prior_start_share=prior_share,

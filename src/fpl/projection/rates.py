@@ -46,6 +46,8 @@ import logging
 from dataclasses import dataclass
 
 from src.fpl.models.immutable import PlayerSeason, PlayerType
+from src.fpl.projection import opponent
+from src.fpl.projection.opponent import OpponentExposure
 
 
 logger = logging.getLogger(__name__)
@@ -176,6 +178,7 @@ class RateModel:
         position: PlayerType,
         prior_season: PlayerSeason | None,
         club_attack: float = 1.0,
+        exposure: OpponentExposure | None = None,
     ) -> PlayerRates:
         """Shrink one player's rates toward their position's average.
 
@@ -185,6 +188,14 @@ class RateModel:
         - club_attack: the club's attack rating from `TeamStrength`, 1.0 being league average.
           Applied *only* to the no-evidence fallback: a player with real minutes already has his
           club's quality baked into his own rate, and scaling again would double-count.
+        - exposure: the average opponent this player's record was earned against. When given, each
+          raw rate is divided by that opponent strength raised to the metric's fitted elasticity,
+          leaving a rate against a neutral opponent for the fixture multiplier to scale back up.
+          None leaves the rates exactly as measured, which is the pre-v5 behaviour.
+
+        The position *average* is never normalised: it is already a league-wide mean over every
+        opponent, so it is neutral by construction. Only a player's own measured rate carries a
+        particular schedule.
         """
         average = self.position_averages[position]
         if prior_season is None or prior_season.minutes <= 0:
@@ -200,6 +211,15 @@ class RateModel:
 
         weight = prior_season.minutes / (prior_season.minutes + self._shrinkage)
         raw = self._raw_rates(prior_season)
+        if exposure is not None:
+            raw = {
+                name: opponent.normalise(
+                    value,
+                    exposure.axis(opponent.METRIC_AXIS[name]),
+                    opponent.OPPONENT_ELASTICITY[name][position],
+                ) if name in opponent.METRIC_AXIS else value
+                for name, value in raw.items()
+            }
         return PlayerRates(
             position=position,
             sample_minutes=float(prior_season.minutes),

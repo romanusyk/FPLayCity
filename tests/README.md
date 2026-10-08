@@ -10,8 +10,8 @@ makes a fresh checkout work, and the one case where the suite touches the networ
 - **Offline unit tests** (`test_prior_season.py`, `test_fotmob_friendlies.py`,
   `test_projection_models.py`, `test_opportunity.py`, `test_waivers.py`,
   `test_draft_league.py`, `test_fpl_squad.py`, `test_artifacts.py`,
-  `test_project_horizon.py`, `test_transfers.py`, `test_news_extraction.py`) use hand-built
-  payloads
+  `test_project_horizon.py`, `test_transfers.py`, `test_news_extraction.py`,
+  `test_opponent.py`, `test_availability.py`) use hand-built payloads
   or a temporary working directory. They need no cached data at all.
 - **Dataset tests** (`test_immutable.py`, `test_scoring.py`) read the real cached snapshots under
   `data/<season>/`. `test_immutable.py` depends on the `fpl_data` fixture, which runs
@@ -39,6 +39,8 @@ tests/
 ├── test_project_horizon.py      # The horizon defaults to the gameweeks still to come (offline)
 ├── test_transfers.py            # Classic-FPL swaps: budget, three-per-club, the hit (offline)
 ├── test_news_extraction.py      # The claude -p client, and who counts as the same player (offline)
+├── test_opponent.py             # Opponent adjustment and defensive-actions shrinkage (offline)
+├── test_availability.py         # How long a flagged player is actually out (offline)
 ├── test_web_api.py              # Every HTTP route, against the real snapshots
 └── README.md                    # This file
 ```
@@ -95,6 +97,22 @@ club, and a swap whose gain a 4-point hit would wipe out. Two of its tests are t
 answers surprise people - upgrading a player who never starts gains exactly zero rather than the
 difference between the two players, and a missing bank raises rather than defaulting to £0.0,
 because zero is itself a budget and the tightest one.
+
+`test_availability.py` pins the two things that fail quietly when a return date is read out of
+FPL's news text: a year inferred wrongly puts the return twelve months out, and an off-by-one at the
+boundary hands a suspended player a gameweek he is banned for. The season spans August to May so
+each month occurs once, which is what makes a bare `19 Oct` resolvable at all, and the boundary is
+the first gameweek whose *deadline* is on or after the date. A separate test holds the line that
+`Unknown return date` still suppresses the whole horizon, because that is FPL saying it does not
+know rather than an absence of data.
+
+`test_opponent.py` pins three claims that fail differently. `normalise` and `apply` must be
+inverses, or the whole league is silently re-rated. The fitted elasticities must be *used* rather
+than assumed to be 1.0 - and a forward's xG elasticity of exactly zero is the entry most likely to
+be "fixed" by someone who reads a zero as an oversight, so it has a test naming the measurement.
+And defensive actions must be shrunk toward the position mean *before* the threshold is applied,
+with a test contrasting that against the hit-rate prior, which looks like the same fix and moves a
+thin sample the wrong way.
 
 `test_news_extraction.py` never spawns a subprocess or calls a model: the CLI is faked at the
 `asyncio.create_subprocess_exec` boundary, so what is pinned is our handling of what comes back -

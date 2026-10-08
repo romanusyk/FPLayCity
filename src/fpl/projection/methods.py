@@ -20,7 +20,27 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
 
-from src.fpl.projection.defensive import DEFAULT_SHRINKAGE_STARTS
+from src.fpl.projection.defensive import (
+    DEFAULT_ACTIONS_SHRINKAGE_MINUTES,
+    DEFAULT_SHRINKAGE_STARTS,
+)
+
+OPPONENT_DC_ACTIONS_MINUTES = 450.0
+"""Actions-per-90 prior for v5: five matches, the same weight `rate_shrinkage_minutes` uses for
+xG and xA. Not fitted - a judgement, with `v5-dc-actions-shrinkage` as its control.
+
+Four starts (360 minutes) then carry 44% weight against the position mean instead of 100%, and a
+full season (2,600 minutes) carries 85%, so a real sample is barely touched."""
+
+OPPONENT_DC_SHRINKAGE_STARTS = 12.0
+"""DC prior weight, in starts, for v5. Not fitted - a judgement, with `v5-dc-shrinkage` as its
+control.
+
+At the old 5.0 a player with four starts gets 4/(4+5) = 44% weight on an observed hit rate drawn
+from four matches, which is how a defender with one month of Premier League football reached the
+top of a waiver board. At 12.0 those four starts carry 25%, and a full season (34 starts) still
+carries 74%, so a real sample is barely touched. The cost is being slower to notice a genuine
+change in a player's defensive role."""
 from src.fpl.projection.minutes import (
     CURRENT_SEASON_FULL_MATCHES,
     DEFAULT_PRESEASON_FRIENDLY_WEIGHT,
@@ -78,6 +98,50 @@ class ProjectionParams:
     """Current-season matches at which this season weighs as much as all of last season, in the
     club ratings. None ignores the current season, which is the historical behaviour. See
     `TeamStrength` in `src/fpl/projection/strength.py`."""
+    dc_actions_shrinkage_minutes: float = DEFAULT_ACTIONS_SHRINKAGE_MINUTES
+    """Prior weight, in minutes, pulling defensive actions per 90 toward the position average.
+
+    The counterpart of `rate_shrinkage_minutes`, which has always done this for xG and xA. 0.0 is
+    the historical behaviour and an asymmetry rather than a decision: a four-start sample of 12.5
+    actions implied a hit rate of 0.80 and was believed outright.
+    """
+    honour_suspension_return: bool = False
+    """Read "Suspended until <date>" out of FPL's news text and end the suppression there.
+
+    A ban is a known number of matches. Applied to a whole horizon it cost Foden roughly 25 points
+    of a GW5-14 projection and had a waiver board recommending his sale. See
+    `src/fpl/projection/availability.py`.
+    """
+    honour_injury_return: bool = False
+    """The same for "Expected back <date>". Weaker evidence than a ban - FPL's estimate of a
+    medical timeline, and a returning player may not walk back into the side - which is why it is a
+    separate switch from the suspension one.
+    """
+    status_return_role_share: float = 1.0
+    """Share of his normal role a player is credited with from the return gameweek on.
+
+    1.0 says he walks straight back in. Right for a ban; optimistic for an injury. **Not fitted** -
+    one season holds too few long absences - so it is a judgement, and the two switches above let
+    the injury case be turned off entirely rather than discounted by a guessed number.
+    """
+    adjust_history_for_opponent: bool = False
+    """Divide each measured rate by the opponent strength it was earned against.
+
+    A player's per-90 rates and defensive actions describe the schedule he actually played. Left
+    raw, a defender who piled up actions against the division's best attacks carries that number
+    into an average fixture. See `src/fpl/projection/opponent.py` for the fitted elasticities.
+    False reproduces every method coined before 2026-09-17.
+    """
+    opponent_elasticity_forward: bool = False
+    """Apply a fixture's opponent multiplier at the metric's fitted elasticity, not at 1.0.
+
+    The engine multiplied xG by the full multiplier, which assumes output is exactly proportional
+    to how weak the defence is. Measured, a midfielder's xG moves at about half that rate and a
+    forward's not at all. False keeps the old full-strength multiplication.
+
+    Pairs with `adjust_history_for_opponent`: with both on, past and future use the same exponent,
+    which is the only self-consistent setting. Either alone is a control, not a recommendation.
+    """
     use_preseason: bool = True
     team_shrinkage_matches: float = DEFAULT_SHRINKAGE_MATCHES
     rate_shrinkage_minutes: float = SHRINKAGE_MINUTES
@@ -255,10 +319,150 @@ METHODS: dict[str, ProjectionMethod] = {
             strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
         ),
     ),
+    'v5-opponent-adjusted': ProjectionMethod(
+        name='v5-opponent-adjusted',
+        notes=(
+            '**The default from GW5 2026/27 on.** Makes the projection opponent-aware in both '
+            'directions. Every measured rate - xG, xA, bonus, saves and defensive actions - is '
+            'divided by the opponent strength it was earned against, and every fixture multiplier '
+            'is applied at that metric\'s fitted elasticity rather than at full strength. Also '
+            f'raises DC shrinkage from {DEFAULT_SHRINKAGE_STARTS:.0f} to '
+            f'{OPPONENT_DC_SHRINKAGE_STARTS:.0f} starts, so a hit rate off four matches no longer '
+            'moves a board. Three levers, so v5-opponent-history, v5-opponent-forward and '
+            'v5-dc-shrinkage isolate one each against v4-current-form.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+            adjust_history_for_opponent=True,
+            opponent_elasticity_forward=True,
+            dc_actions_shrinkage_minutes=OPPONENT_DC_ACTIONS_MINUTES,
+        ),
+    ),
+    'v5-status-duration': ProjectionMethod(
+        name='v5-status-duration',
+        notes=(
+            'v5-opponent-adjusted plus a read of how long a flagged player is actually out. FPL '
+            'publishes it in plain text - "Suspended until 19 Oct", "Expected back 10 Oct" - and '
+            'the model used to apply the flag to every gameweek in the horizon, so a two-match ban '
+            'cost a player the whole run. Foden, GW5-14 on 2026-09-17: ~7 points projected against '
+            'a true figure in the low thirties, and a waiver board recommending his sale. Players '
+            'whose news says "Unknown return date" are unchanged. Two levers, isolated by '
+            'v5-suspension-duration and v5-injury-duration.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+            adjust_history_for_opponent=True,
+            opponent_elasticity_forward=True,
+            dc_actions_shrinkage_minutes=OPPONENT_DC_ACTIONS_MINUTES,
+            honour_suspension_return=True,
+            honour_injury_return=True,
+        ),
+    ),
+    'v5-suspension-duration': ProjectionMethod(
+        name='v5-suspension-duration',
+        notes=(
+            'Control: only bans get a return date. The strongest case, because a suspension is a '
+            'known number of matches rather than a medical estimate, and a player returning from '
+            'one is fit. One parameter from v5-opponent-adjusted.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+            adjust_history_for_opponent=True,
+            opponent_elasticity_forward=True,
+            dc_actions_shrinkage_minutes=OPPONENT_DC_ACTIONS_MINUTES,
+            honour_suspension_return=True,
+        ),
+    ),
+    'v5-injury-duration': ProjectionMethod(
+        name='v5-injury-duration',
+        notes=(
+            'Control: only injuries get a return date. The weaker case - "Expected back" is a '
+            'medical estimate that slips, and a returning player may start on the bench, which '
+            'status_return_role_share could discount but is not fitted. One parameter from '
+            'v5-opponent-adjusted.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+            adjust_history_for_opponent=True,
+            opponent_elasticity_forward=True,
+            dc_actions_shrinkage_minutes=OPPONENT_DC_ACTIONS_MINUTES,
+            honour_injury_return=True,
+        ),
+    ),
+    'v5-opponent-history': ProjectionMethod(
+        name='v5-opponent-history',
+        notes=(
+            'Control for v5: only the backward half. Measured rates are normalised by the opponents '
+            'they were earned against, while fixtures are still projected at full strength. '
+            'Deliberately inconsistent - past and future use different exponents - and it exists to '
+            'show what the normalisation alone does. One parameter from v4-current-form.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+            adjust_history_for_opponent=True,
+        ),
+    ),
+    'v5-opponent-forward': ProjectionMethod(
+        name='v5-opponent-forward',
+        notes=(
+            'Control for v5: only the forward half. Fixture multipliers are applied at each '
+            'metric\'s fitted elasticity instead of at 1.0, so the board stops over-reacting to an '
+            'easy run, while rates stay as measured. One parameter from v4-current-form.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+            opponent_elasticity_forward=True,
+        ),
+    ),
+    'v5-dc-actions-shrinkage': ProjectionMethod(
+        name='v5-dc-actions-shrinkage',
+        notes=(
+            'Control for v5: only the actions-per-90 shrinkage, toward the position mean at '
+            f'{OPPONENT_DC_ACTIONS_MINUTES:.0f} minutes. This is the lever that actually moves a '
+            'thin sample: `implied_hit_rate` is a tail probability, so believing 12.5 actions off '
+            'four starts overstates the hit rate far more than the raw average is out by. One '
+            'parameter from v4-current-form.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+            dc_actions_shrinkage_minutes=OPPONENT_DC_ACTIONS_MINUTES,
+        ),
+    ),
+    'v5-dc-shrinkage': ProjectionMethod(
+        name='v5-dc-shrinkage',
+        notes=(
+            'Control, and a negative result worth keeping. Raises the *hit-rate* prior from '
+            f'{DEFAULT_SHRINKAGE_STARTS:.0f} to {OPPONENT_DC_SHRINKAGE_STARTS:.0f} starts, which '
+            'sounds like the fix for a four-start sample and is not: it shrinks the observed rate '
+            'toward the *implied* one, and the implied one is computed from the same four starts. '
+            'Muharemović\'s hit rate went 0.777 -> 0.786, the wrong way. Kept so nobody proposes '
+            'it again. One parameter from v4-current-form.'
+        ),
+        params=BASELINE.replace(
+            discount_transfers=True,
+            current_season_full_matches=CURRENT_SEASON_FULL_MATCHES,
+            strength_current_prior_matches=DEFAULT_CURRENT_PRIOR_MATCHES,
+            dc_shrinkage_starts=OPPONENT_DC_SHRINKAGE_STARTS,
+        ),
+    ),
 }
 
 
-DEFAULT_METHOD = 'v4-current-form'
+DEFAULT_METHOD = 'v5-status-duration'
 
 
 def method(name: str) -> ProjectionMethod:

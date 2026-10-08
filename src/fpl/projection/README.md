@@ -135,6 +135,54 @@ prune_runs(keep=N)                       # never deletes a run that feedback ref
 Reads only what is on disk. Refresh the inputs first with `./run.sh -m src.fpl.fetch` and
 `./run.sh -m src.fotmob.load`, or run `./refresh.sh` to do the lot.
 
+### A flag is about now, not about the next ten gameweeks
+
+`status` was applied as one multiplier to every fixture, so a two-match ban cost a player the whole
+run — Foden projected ~7 points over GW5-14 while suspended for two of them, and a waiver board
+recommended selling him. FPL publishes the duration in the `news` field (`Suspended until 19 Oct`,
+`Expected back 10 Oct`), so `src/fpl/projection/availability.py` parses it and
+`MinutesEstimate.at_gameweek` ends the suppression at the right gameweek.
+
+Players whose news says `Unknown return date` are deliberately unchanged: that is FPL stating it
+does not know, and suppressing the horizon is the right answer. Suspensions and injuries are
+separate switches because the evidence differs in kind — a ban is a fixed number of matches and the
+player is fit at the end of it, while "expected back" is a medical estimate that slips.
+
+### Opponent strength runs in both directions
+
+The projection used to be opponent-aware only going forward. Each fixture got a
+`clean_sheet_probability` and an `attack_multiplier` from `TeamStrength`, but the rates being
+multiplied were raw per-90 numbers taken at face value however easy or hard a schedule had produced
+them. `src/fpl/projection/opponent.py` closes that: a measured rate is divided by the opponent
+strength it was earned against, leaving a rate against a neutral opponent that the fixture
+multiplier scales back up.
+
+**The exponent is not 1.0.** Measured over 5,087 starts across 2025/26 and 2026/27, a midfielder's
+xG moves at roughly *half* the rate the engine assumed, and a forward's xG does not move with
+opponent defence at all. Each metric therefore carries a fitted elasticity, and the fixture
+multiplier is raised to it. Two consequences worth knowing: an easy run is worth less than the old
+board said, and a forward's projection is now flat across fixtures because his chances come from
+his own team creating them.
+
+**Defensive actions barely respond to the opponent** (elasticity 0.10 for defenders), which is the
+opposite of what a coarser cut suggests - the *hit rate* against the 10-action threshold moves from
+20% to 31%. Both are true, because a threshold crossing amplifies a small shift in the mean. The
+adjustment is applied to `actions_per_90` and the threshold re-applied afterwards, never to the hit
+rate directly.
+
+### Thin defensive samples are shrunk, and one obvious fix does not work
+
+`RateModel` has always shrunk xG and xA toward a position average. Defensive actions, which feed a
+*threshold*, were taken raw however short the sample: four starts at 12.5 actions implied a 0.80
+hit rate and put a defender with one month of Premier League football on top of a waiver board.
+`dc_actions_shrinkage_minutes` gives them the same five-match prior, so four starts carry 44%
+weight against the position mean and a full season still carries 85%.
+
+Raising `dc_shrinkage_starts` - the *hit-rate* prior - looks like the same fix and is not. It
+shrinks the observed rate toward the implied one, and the implied one is computed from the same
+four starts, so the estimate moved the wrong way (0.777 -> 0.786). `v5-dc-shrinkage` keeps that
+result so nobody proposes it again.
+
 ### The horizon defaults forward
 
 A run projects ten gameweeks starting at the **next** one, resolved by `resolve_next_gameweek()`.
@@ -160,6 +208,14 @@ place this is decided, and `tests/test_project_horizon.py` pins it.
 
 | Method | What it changes |
 |---|---|
+| `v5-status-duration` | **The default from GW6 2026/27.** Everything in `v5-opponent-adjusted`, plus reading how long a flagged player is actually out from FPL's own news text instead of suppressing the whole horizon. |
+| `v5-suspension-duration` | Only bans get a return date — the strongest case. |
+| `v5-injury-duration` | Only injuries get a return date — a medical estimate, so weaker. |
+| `v5-opponent-adjusted` | **The default for GW5 2026/27.** Opponent-aware in both directions: measured rates are divided by the opponents they were earned against, fixture multipliers are applied at each metric's fitted elasticity rather than at full strength, and defensive actions are shrunk toward the position mean. |
+| `v5-opponent-history` | Only the backward half: rates normalised, fixtures still projected at full strength. |
+| `v5-opponent-forward` | Only the forward half: fitted elasticities applied to fixtures, rates left as measured. |
+| `v5-dc-actions-shrinkage` | Only the actions-per-90 shrinkage toward the position mean. |
+| `v5-dc-shrinkage` | A kept negative result: raises the hit-rate prior instead, which does not work. |
 | `v4-current-form` | **The default from GW2 2026/27.** Both current-season levers: the minutes blend ramps toward the matches just played, and club ratings blend this season with last. |
 | `v4-form-minutes` | Only the minutes ramp. One parameter from `v3-role-trust`. |
 | `v4-form-strength` | Only the club ratings. One parameter from `v3-role-trust`. |
