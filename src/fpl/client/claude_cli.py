@@ -201,6 +201,40 @@ class ClaudeCliClient:
         return result
 
 
+def _last_json_value(text: str, schema: dict[str, Any]) -> Any | None:
+    """The last complete JSON value of the schema's type embedded in `text`, or None.
+
+    Models sometimes answer, think better of it, and answer again:
+
+        [{"player_id": 136, ...}]
+
+        Correction - the output above was wrong. Corrected output:
+
+        [{"player_id": 124, ...}]
+
+    A strict `json.loads` fails on that with "Extra data", and it cost four retries and a failed
+    news run the first time it happened. Taking the *last* value is the point: when a model
+    corrects itself the correction comes second, and a reply with one clean value is unaffected
+    because the strict parse already handled it.
+
+    Deliberately not a regex. `raw_decode` from each candidate opening bracket is the only way to
+    find where a nested value actually ends.
+    """
+    opener = '[' if schema.get('type') == 'array' else '{'
+    decoder = json.JSONDecoder()
+    found = None
+    index = text.find(opener)
+    while index != -1:
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            pass
+        else:
+            found = value
+        index = text.find(opener, index + 1)
+    return found
+
+
 def _parse_json(text: str, schema: dict[str, Any]) -> Any:
     """Parse `text` as JSON and check it against the shape `schema` promises.
 
@@ -215,8 +249,10 @@ def _parse_json(text: str, schema: dict[str, Any]) -> Any:
     stripped = _FENCE.sub('', text.strip())
     try:
         value = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"reply was not JSON: {exc}") from exc
+    except json.JSONDecodeError:
+        value = _last_json_value(stripped, schema)
+        if value is None:
+            raise ValueError("reply was not JSON and contained no complete JSON value")
 
     if schema.get('type') == 'array':
         if not isinstance(value, list):

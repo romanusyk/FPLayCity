@@ -202,6 +202,40 @@ def test_a_different_name_is_a_different_player(extracted, official):
     assert comparable_name(extracted) != comparable_name(official)
 
 
+def test_a_self_correcting_reply_takes_the_correction():
+    """Models answer, think better of it, and answer again:
+
+        [...]
+
+        Correction - the output above was wrong. Corrected output:
+
+        [...]
+
+    A strict json.loads fails on that with "Extra data". It cost four retries and a failed news
+    run on 2026-10-08 before the parser learned to take the last complete value.
+    """
+    reply = (
+        '[{"player_id": 136, "web_name": "Welbeck", "fact": "Not relevant.", '
+        '"form": 0, "availability": 0}]\n\n'
+        'Correction - the output above was wrong. Corrected output:\n\n'
+        '[{"player_id": 124, "web_name": "Gross", "fact": "Most chances created", '
+        '"form": 0.3, "availability": 0.1}]'
+    )
+    got = _parse_json(reply, SCHEMA)
+    assert [row['player_id'] for row in got] == [124]
+
+
+def test_a_clean_reply_is_still_parsed_strictly():
+    """The fast path must not change: one value, parsed whole."""
+    assert _parse_json(FACTS, SCHEMA)[0]['player_id'] == 1
+
+
+def test_prose_with_no_json_at_all_still_fails():
+    """Taking the last value must not become "accept anything"."""
+    with pytest.raises(ValueError):
+        _parse_json('I am not going to do that.', SCHEMA)
+
+
 def test_parse_json_rejects_a_non_array_when_an_array_is_promised():
     with pytest.raises(ValueError, match='expected a JSON array'):
         _parse_json('{"player_id": 1}', SCHEMA)
